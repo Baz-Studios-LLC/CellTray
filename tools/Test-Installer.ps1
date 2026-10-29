@@ -21,6 +21,9 @@ $cliVersion = & (Join-Path $installDir 'celltray.exe') --version
 if ($cliVersion -ne "CellTray $version") { throw "Wrong installed version: $cliVersion" }
 $fileVersion = (Get-Item -LiteralPath (Join-Path $installDir 'celltray-widgets.exe')).VersionInfo.ProductVersion
 if ($fileVersion -ne $version) { throw "Wrong file metadata version: $fileVersion" }
+$copyright = 'Copyright (c) 2026 Baz Studios LLC'
+if ((Get-Item -LiteralPath (Join-Path $installDir 'celltray-widgets.exe')).VersionInfo.LegalCopyright -ne $copyright) { throw 'Wrong embedded copyright holder' }
+if ((Get-Content -LiteralPath (Join-Path $installDir 'LICENSE')) -notcontains $copyright) { throw 'Wrong installed license copyright holder' }
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'CellTray\CellTray.lnk'
 if (-not (Test-Path -LiteralPath $shortcut)) { throw 'Start menu shortcut is missing' }
 $startupKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
