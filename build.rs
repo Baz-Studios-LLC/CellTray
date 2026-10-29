@@ -15,7 +15,7 @@ fn main() {
             .set("CompanyName", "Baz Studios")
             .set("FileVersion", &version::label())
             .set("ProductVersion", &version::label())
-            .set("LegalCopyright", "Copyright CellTray contributors");
+            .set("LegalCopyright", "Copyright (c) 2026 Baz Studios LLC");
         // Windows' binary version fields require numeric components; UI uses vNNN.
         resource.set_version_info(
             winresource::VersionInfo::FILEVERSION,
