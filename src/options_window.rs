@@ -774,7 +774,11 @@ unsafe fn canvas(hwnd: HWND, dc: HDC, bounds: RECT) {
             s(8),
         );
         icons::draw(dc, i, s(x + 8), s(119), s(14), color);
-        text(dc, value, fonts[0], color, x + 30, 115, 50, 22, dpi);
+        if i == 2 && *charging && value == "—" {
+            icons::draw(dc, 8, s(x + 30), s(119), s(14), color);
+        } else {
+            text(dc, value, fonts[0], color, x + 30, 115, 50, 22, dpi);
+        }
     }
     for (y, h) in [(150, 92), (258, 150)] {
         surface(
@@ -1334,7 +1338,11 @@ unsafe fn devices_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
             "On battery"
         };
         text(dc, status, fonts[0], MUTED, 90, y + 43, 330, 22, dpi);
-        text(dc, value, fonts[2], color, 465, y + 22, 100, 36, dpi);
+        if index == 2 && *charging && value == "—" {
+            icons::draw(dc, 8, s(465), s(y + 29), s(22), color);
+        } else {
+            text(dc, value, fonts[2], color, 465, y + 22, 100, 36, dpi);
+        }
     }
 }
 unsafe fn about_canvas(hwnd: HWND, dc: HDC, dpi: i32) {

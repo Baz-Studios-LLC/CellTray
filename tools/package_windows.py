@@ -61,7 +61,7 @@ Exit any older running copy first. The tray control icon may be under the ^ arro
 Supported, verified hardware: Logitech Alto Keys K98M and MX Master 4 through the
 046d:c548 Logi Bolt receiver; Fractal Design Scape through its 36bc:0001 dongle.
 Scape charging is assumed when its dongle is present but the headset is offline.
-This does not verify docking; the battery percentage is unavailable in that state.
+This does not verify docking; a green lightning bolt replaces the unavailable percentage.
 Bluetooth and other receiver IDs are unsupported.
 
 Options contains General, Devices and About tabs, verified in-app updates and Restart.

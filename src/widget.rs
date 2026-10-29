@@ -726,6 +726,10 @@ unsafe fn paint(hwnd: HWND) {
         let color = battery_color(value, *charging, yellow, red);
         icons::draw(dc, i, left, cy - s(15), s(30), color);
         SetTextColor(dc, color);
+        if i == 2 && *charging && value == "—" {
+            icons::draw(dc, 8, left + s(35), cy - s(12), s(24), color);
+            continue;
+        }
         let text = wide(value);
         let mut r = RECT {
             left: left + s(35),

@@ -6,7 +6,7 @@ now includes hardware diagnostics and an early standalone Windows battery-cell s
 
 ## Install on Windows
 
-Download **CellTray-v006-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
+Download **CellTray-v007-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
 and run it. Exit any older running CellTray copy before installing.
 
 Setup installs for your account in `%LOCALAPPDATA%/Programs/CellTray`, creates a
@@ -32,7 +32,8 @@ on Windows and are the verified hardware targets for **v001**:
 
 For Scape, a present dongle with an offline status or poll timeout is temporarily
 assumed to mean the headset is docked and charging. Its icon turns green; the
-percentage shows **—** because a current battery value is unavailable. Devices
+percentage is replaced by a small green lightning bolt because a current battery
+value is unavailable. Devices
 labels this as **Charging assumed · headset disconnected**. Switching the headset
 off, going out of range, or a busy HID stream can also trigger this assumption.
 Unplugging the dongle, an access/I/O error, or a malformed response does not imply
