@@ -12,6 +12,10 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["--version"] {
+        println!("CellTray {}", version::label());
+        return Ok(());
+    }
     #[cfg(windows)]
     if args == ["widget"] {
         return widget::run();

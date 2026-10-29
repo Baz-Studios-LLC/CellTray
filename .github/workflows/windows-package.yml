@@ -1,0 +1,38 @@
+name: Windows installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo build --locked --release --bins
+      - name: Build portable package and installer
+        id: package
+        shell: pwsh
+        run: ./tools/Build-Installer.ps1
+      - name: Verify install, repair and uninstall
+        shell: pwsh
+        run: ./tools/Test-Installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CellTray-${{ steps.package.outputs.version }}-windows
+          path: |
+            target/package/*-Setup-x64.exe
+            target/package/*-windows-x64.zip
+            target/package/SHA256SUMS.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-logs
+          path: ${{ runner.temp }}/celltray-*.log
+          if-no-files-found: ignore

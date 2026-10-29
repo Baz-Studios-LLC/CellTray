@@ -141,8 +141,14 @@ mod tests {
             Ok(ReleaseStatus::Current)
         );
         assert_eq!(
-            parse(200, br#"{"tag_name":"v002"}"#),
-            Ok(ReleaseStatus::Available("v002".into()))
+            parse(
+                200,
+                format!(r#"{{"tag_name":"v{:03}"}}"#, crate::version::BUILD + 1).as_bytes()
+            ),
+            Ok(ReleaseStatus::Available(format!(
+                "v{:03}",
+                crate::version::BUILD + 1
+            )))
         );
         assert!(parse(403, b"{}").is_err());
         assert!(parse(200, br#"{"tag_name":"invalid"}"#).is_err());

@@ -4,6 +4,21 @@ A small Rust peripheral battery utility targeting Windows 11, macOS, and Linux,
 with Bazzite KDE Plasma as the primary Linux target. The current implementation
 now includes hardware diagnostics and an early standalone Windows battery-cell strip.
 
+## Install on Windows
+
+Download **CellTray-v002-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
+and run it. Exit any older running CellTray copy before installing.
+
+Setup installs for your account in `%LOCALAPPDATA%/Programs/CellTray`, creates a
+Start menu shortcut, and adds CellTray to **Settings → Apps → Installed apps**.
+Desktop shortcut and launch-at-sign-in options are optional and off by default.
+You can launch CellTray on the final setup page. No administrator rights are required.
+Re-running a newer installer updates the same app. Uninstall through Installed apps
+or the Start menu shortcut; saved preferences are preserved.
+
+The installer and portable ZIP are currently unsigned. The ZIP remains available
+for portable use; extract the entire package and run `celltray-widgets.exe`.
+
 ## Supported devices
 
 The following device/connection combinations have returned real battery readings
@@ -49,7 +64,8 @@ yellow. **Save changes** applies and persists; **Cancel** leaves settings alone.
 Preferences and cell order are saved in `%LOCALAPPDATA%/CellTray/settings.json`.
 The interval is the wait after each poll completes; slow HID queries can extend
 the time between readings. Changes trigger a poll without restarting.
-No startup registration or installation is performed.
+The portable app does not install or register startup on its own; Setup provides
+those options.
 **Devices** shows the live readings and charging information with a refresh button;
 clicking a battery cell opens this tab. **About** includes version, credits,
 **Check for updates**, a GitHub link, and **Restart**. The tray menu also provides
@@ -74,7 +90,7 @@ the development machine, so the current strip runs in its own process/window.
 It tracks taskbar position/DPI, hides for detected fullscreen apps, and hides when
 the taskbar is absent. Taskbar autohide animations and Explorer recovery need more
 physical testing. Windows light themes, collision detection, whole-strip positioning, multiple
-monitors, tooltips, full accessibility, startup settings and notifications are not implemented.
+monitors, tooltips, full accessibility, in-app startup settings and notifications are not implemented.
 It assumes a bottom, centered taskbar with room at the left; it cannot reserve
 space and can overlap Windows Widgets or left-aligned taskbar buttons. It hides
 on narrow or vertical taskbars rather than attempting a layout there.
