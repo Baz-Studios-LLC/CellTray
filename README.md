@@ -11,7 +11,12 @@ The GUI executable opens without a console and shows keyboard, mouse, and headse
 cells over the left side of the primary taskbar. Drag a device icon or percentage
 left/right to reorder cells; release to save. The row previews the new order while
 dragging. A click without dragging opens details; right-click opens the menu.
-Open **Options…** from the tray menu for the native dark settings window. Choose
+Open **Options…** from the tray menu for the native, chromeless settings window.
+The sidebar has **General**, **Devices**, and **About** tabs. The header is draggable
+and provides custom minimize/close controls. Options is a normal window, separate
+from the taskbar strip, so it does not inherit its always-on-top behavior.
+
+Under **General**, choose
 a refresh interval of 5, 15, 30, or 60 seconds and enter yellow/red thresholds
 from 1–100%. Defaults are yellow at 20% and red at 10%; red must be lower than
 yellow. **Save changes** applies and persists; **Cancel** leaves settings alone.
@@ -19,9 +24,20 @@ Preferences and cell order are saved in `%LOCALAPPDATA%/CellTray/settings.json`.
 The interval is the wait after each poll completes; slow HID queries can extend
 the time between readings. Changes trigger a poll without restarting.
 No startup registration or installation is performed.
+**Devices** shows the live readings and charging information with a refresh button;
+clicking a battery cell opens this tab. **About** includes version, credits,
+**Check for updates**, a GitHub link, and **Restart**. The tray menu also provides
+Restart and follows the Windows taskbar's light/dark theme.
+
+Public app versions and release tags use sequential names: **v001**, **v002**,
+**v003**, and so on. The About button checks the latest published GitHub Release
+over HTTPS on a background thread; it does not download or install code. Until a
+release is published, it reports that no releases are available. Network/HTTP
+failures are shown without claiming the app is current. Automatic updates remain
+future work.
 CellTray also provides one notification-area control icon: a white cell membrane
 with a nucleus and two small dots. Click or right-click it for **Show battery cells**, refresh,
-device details, options, and exit. Windows may place it under the tray overflow
+devices, options, restart, and exit. Windows may place it under the tray overflow
 arrow. It is restored after Explorer restarts and removed on clean exit. Show/hide
 is session-only; the saved device order and refresh interval persist.
 Use `celltray-widgets.exe --preview` for a normal window showing the same renderer.

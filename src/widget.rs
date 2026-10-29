@@ -7,10 +7,13 @@ mod icons;
 mod options_window;
 #[path = "widget_settings.rs"]
 mod settings;
+#[path = "tray_menu.rs"]
+mod tray_menu;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 static STRIP_HWND: AtomicUsize = AtomicUsize::new(0);
 static TRAY_ICON: AtomicUsize = AtomicUsize::new(0);
 static REFRESH_SECONDS: AtomicU64 = AtomicU64::new(30);
+static RESTART: AtomicBool = AtomicBool::new(false);
 static SHOW_CELLS: AtomicBool = AtomicBool::new(true);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -191,6 +194,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        let options = options_window::window();
+        if !options.is_null() {
+            DestroyWindow(options);
+        }
         tray_icon(controller, NIM_DELETE);
         if !reorder_hook.is_null() {
             UnhookWinEvent(reorder_hook);
@@ -205,6 +212,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         DestroyWindow(controller);
         CloseHandle(mutex);
+        if RESTART.load(Ordering::Relaxed) {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new(std::env::current_exe()?)
+                .args(std::env::args_os().skip(1))
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?;
+        }
     }
     Ok(())
 }
@@ -222,6 +236,20 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) 
                 _ => {}
             }
             0
+        }
+        WM_MEASUREITEM => {
+            if tray_menu::measure(hwnd, l) {
+                1
+            } else {
+                DefWindowProcW(hwnd, msg, w, l)
+            }
+        }
+        WM_DRAWITEM => {
+            if tray_menu::draw(hwnd, l) {
+                1
+            } else {
+                DefWindowProcW(hwnd, msg, w, l)
+            }
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
         WM_TIMER => {
@@ -487,24 +515,33 @@ unsafe fn tick(controller: HWND) {
         ShowWindow(controller, SW_HIDE);
         return;
     }
-    let positioned = SetWindowPos(
-        controller,
-        HWND_TOPMOST,
-        rect.left + scale(16),
-        rect.top,
-        scale(STRIP_WIDTH),
-        rect.bottom - rect.top,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
-    if std::env::var_os("CELLTRAY_LAYOUT_TRACE").is_some() {
-        eprintln!(
-            "strip positioned={positioned}, visible={}, error={}",
-            IsWindowVisible(controller),
-            GetLastError()
+    let mut current: RECT = std::mem::zeroed();
+    GetWindowRect(controller, &mut current);
+    let needs_position = IsWindowVisible(controller) == 0
+        || current.left != rect.left + scale(16)
+        || current.top != rect.top
+        || current.right - current.left != scale(STRIP_WIDTH)
+        || current.bottom - current.top != rect.bottom - rect.top;
+    if needs_position {
+        let positioned = SetWindowPos(
+            controller,
+            HWND_TOPMOST,
+            rect.left + scale(16),
+            rect.top,
+            scale(STRIP_WIDTH),
+            rect.bottom - rect.top,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
+        if std::env::var_os("CELLTRAY_LAYOUT_TRACE").is_some() {
+            eprintln!(
+                "strip positioned={positioned}, visible={}, error={}",
+                IsWindowVisible(controller),
+                GetLastError()
+            );
+        }
+        ShowWindow(controller, SW_SHOWNOACTIVATE);
     }
-    InvalidateRect(controller, null(), 1);
-    ShowWindow(controller, SW_SHOWNOACTIVATE);
+    InvalidateRect(controller, null(), 0);
 }
 fn cells() -> [(String, String, bool); 3] {
     if let Some(ui) = UI.get()
@@ -653,40 +690,25 @@ fn battery_color(value: &str, charging: bool, yellow: u8, red: u8) -> u32 {
     }
 }
 unsafe fn details(hwnd: HWND) {
-    let content = cells()
-        .iter()
-        .map(|(name, value, charging)| {
-            format!(
-                "{name}: {value}{}",
-                if *charging { " (charging)" } else { "" }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let interval = REFRESH_SECONDS.load(Ordering::Relaxed);
-    MessageBoxW(hwnd,wide(&format!("{content}\n\nRefreshes every {interval} seconds after each poll completes.\nScape charging state is unknown.\nRight-click for options, refresh or exit.")).as_ptr(),wide("CellTray • Batteries").as_ptr(),MB_OK);
+    options_window::show_devices(hwnd);
+}
+fn request_restart() {
+    RESTART.store(true, Ordering::Relaxed);
+    unsafe {
+        PostQuitMessage(0);
+    }
 }
 unsafe fn menu(hwnd: HWND) {
     let menu = CreatePopupMenu();
     if menu.is_null() {
         return;
     }
-    AppendMenuW(menu, MF_STRING, 1, wide("Refresh batteries").as_ptr());
-    AppendMenuW(menu, MF_STRING, 2, wide("Device details").as_ptr());
-    AppendMenuW(
-        menu,
-        MF_STRING
-            | if SHOW_CELLS.load(Ordering::Relaxed) {
-                MF_CHECKED
-            } else {
-                0
-            },
-        4,
-        wide("Show battery cells").as_ptr(),
-    );
-    AppendMenuW(menu, MF_STRING, 5, wide("Options…").as_ptr());
+    let brush = tray_menu::prepare(menu);
+    for id in [1, 2, 4, 5, 6] {
+        tray_menu::append(menu, id);
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    AppendMenuW(menu, MF_STRING, 3, wide("Exit CellTray").as_ptr());
+    tray_menu::append(menu, 3);
     let mut p = std::mem::zeroed();
     GetCursorPos(&mut p);
     SetForegroundWindow(hwnd);
@@ -700,6 +722,7 @@ unsafe fn menu(hwnd: HWND) {
         null(),
     );
     DestroyMenu(menu);
+    DeleteObject(brush);
     match command {
         1 => {
             if let Some(ui) = UI.get()
@@ -715,6 +738,7 @@ unsafe fn menu(hwnd: HWND) {
             tick(hwnd);
         }
         5 => options_window::show(hwnd),
+        6 => request_restart(),
         _ => {}
     }
 }

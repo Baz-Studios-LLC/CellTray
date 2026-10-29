@@ -35,7 +35,16 @@ saved numeric thresholds determine yellow and red for non-charging readings. Lef
 previews an insertion order, then saves it on release. Click opens details;
 right-click opens a short native menu linking to the dark Options window. The
 window validates and saves refresh/threshold fields and supports Save/Cancel and
-keyboard navigation. A hidden-window render test checks its native controls
+keyboard navigation. It has General, Devices, and About pages, a custom draggable
+header, and minimize/close controls. The Options window is not owned by the topmost
+strip; the strip only changes z-order on initial placement or actual taskbar events,
+so it does not continually raise Options above system capture overlays.
+The tray menu uses native owner-drawn rows colored from SystemUsesLightTheme.
+Restart removes the tray icon, destroys Options and the strip, releases the named
+mutex, then launches the same executable with its current arguments.
+The manual update check uses native WinHTTP on a worker, a bounded response body,
+and strict numbered release tags (v001, v002, ...). No update is installed.
+A hidden-window render test checks its native controls
 without capturing or operating the user's desktop. Exit ends the process and removes the
 window; the next launch starts with unknown values until a fresh poll completes.
 `--preview` presents the same renderer in a normal titled window for visual QA.

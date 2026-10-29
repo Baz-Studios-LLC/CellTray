@@ -2,6 +2,8 @@
 #[path = "../devices/mod.rs"]
 #[cfg(windows)]
 mod devices;
+#[path = "../version.rs"]
+mod version;
 #[cfg(windows)]
 #[path = "../widget.rs"]
 mod widget;
@@ -26,6 +28,7 @@ fn main() {
     }
     #[cfg(not(windows))]
     eprintln!(
-        "The widget strip is currently a Windows prototype. Use celltray diagnose for hardware diagnostics."
+        "CellTray {}: the widget strip is currently a Windows prototype. Use celltray diagnose for hardware diagnostics.",
+        version::label()
     );
 }

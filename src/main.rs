@@ -1,4 +1,5 @@
 mod devices;
+mod version;
 #[cfg(windows)]
 mod widget;
 use hidapi::HidApi;
@@ -38,7 +39,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"interfaces":interfaces,"readings":readings})
+            &json!({"version":version::label(),"platform":std::env::consts::OS,"interfaces":interfaces,"readings":readings})
         )?
     );
     Ok(())

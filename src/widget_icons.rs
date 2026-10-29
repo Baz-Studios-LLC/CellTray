@@ -78,7 +78,7 @@ fn raster(icon: usize, size: i32, color: u32) -> Option<Vec<u8>> {
         &mut pixmap.as_mut(),
     );
     let mut bytes = pixmap.data().to_vec();
-    for pixel in bytes.chunks_exact_mut(4) {
+    for pixel in bytes.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Some(bytes)
@@ -170,7 +170,7 @@ mod tests {
             for size in [16, 24, 32, 48] {
                 let pixels = raster(icon, size, 0x00f2f2f2).unwrap();
                 assert_eq!(pixels.len(), (size * size * 4) as usize);
-                assert!(pixels.chunks_exact(4).any(|p| p[3] > 0));
+                assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
             }
         }
     }
