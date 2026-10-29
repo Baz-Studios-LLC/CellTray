@@ -14,7 +14,7 @@ function Install-CellTray {
     if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
 }
 Install-CellTray
-foreach ($file in @('celltray-widgets.exe', 'celltray.exe', 'unins000.exe', 'LICENSE', 'DEPENDENCIES.md')) {
+foreach ($file in @('celltray-widgets.exe', 'celltray.exe', 'celltray-updater.exe', 'unins000.exe', 'LICENSE', 'DEPENDENCIES.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $installDir $file))) { throw "Missing installed file: $file" }
 }
 $cliVersion = & (Join-Path $installDir 'celltray.exe') --version
@@ -33,6 +33,43 @@ if ((Get-ItemProperty -LiteralPath $registry).DisplayVersion -ne $version) { thr
 New-Item -ItemType Directory -Force -Path (Split-Path $settings -Parent) | Out-Null
 $sentinel = '{"refresh_seconds":15,"cell_order":[2,0,1],"yellow_percent":25,"red_percent":10}'
 [IO.File]::WriteAllText($settings, $sentinel)
+# Exercise the updater on this disposable installation without launching the GUI.
+$archive = (Resolve-Path "target/package/CellTray-$version-windows-x64.zip").Path
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+$oldProcess = Start-Process -FilePath (Join-Path $installDir 'celltray.exe') -ArgumentList '--version' -PassThru -Wait -WindowStyle Hidden
+foreach ($scenario in @('tampered', 'cancelled', 'success')) {
+    $updateStage = Join-Path $tempRoot "CellTray-update-$scenario"
+    New-Item -ItemType Directory -Path $updateStage | Out-Null
+    $updateArchive = Join-Path $updateStage 'package.zip'
+    Copy-Item -LiteralPath $archive -Destination $updateArchive
+    $helper = Join-Path $updateStage 'celltray-updater.exe'
+    Copy-Item -LiteralPath (Join-Path $installDir 'celltray-updater.exe') -Destination $helper
+    $plan = @{
+        version = $build; archive = $updateArchive; sha256 = $archiveHash
+        target = $installDir; parent_pid = $oldProcess.Id; relaunch = $false
+    }
+    if ($scenario -eq 'tampered') { $plan.sha256 = '0' * 64 }
+    if ($scenario -ne 'cancelled') { [IO.File]::WriteAllText((Join-Path $updateStage 'commit'), 'commit') }
+    $planPath = Join-Path $updateStage 'plan.json'
+    [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json))
+    $process = Start-Process -FilePath $helper -ArgumentList @('--apply', "`"$planPath`"") -PassThru -Wait -WindowStyle Hidden
+    if ($scenario -eq 'tampered') {
+        if ($process.ExitCode -eq 0) { throw 'Updater accepted an invalid digest' }
+        if (Test-Path -LiteralPath (Join-Path $updateStage 'backup')) { throw 'Invalid update changed the installation' }
+    } elseif ($scenario -eq 'cancelled') {
+        if ($process.ExitCode -ne 0) { throw 'Update cancellation failed' }
+        if (Test-Path -LiteralPath (Join-Path $updateStage 'backup')) { throw 'Uncommitted update changed the installation' }
+    } else {
+        if ($process.ExitCode -ne 0) { throw 'Internal update failed' }
+        $result = Get-Content -Raw -LiteralPath (Join-Path $updateStage 'result.json') | ConvertFrom-Json
+        if (-not $result.success) { throw 'Internal update did not complete' }
+        if (-not (Test-Path -LiteralPath (Join-Path $updateStage 'backup\celltray-widgets.exe'))) { throw 'Update backup missing' }
+    }
+    if ((& (Join-Path $installDir 'celltray.exe') --version) -ne "CellTray $version") { throw 'Update damaged the installed app' }
+    if ((Get-Content -Raw -LiteralPath $settings) -ne $sentinel) { throw 'Update changed preferences' }
+}
+# A newly added notice must also be removed by the original uninstaller.
+[IO.File]::WriteAllText((Join-Path $installDir 'licenses\update-added-notice.txt'), 'Test notice')
 $setupArguments = $setupArguments | ForEach-Object { if ($_ -eq '/TASKS=""') { '/TASKS="startup,desktopicon"' } else { $_ } }
 Install-CellTray
 if ((Get-Content -Raw -LiteralPath $settings) -ne $sentinel) { throw 'Reinstallation changed preferences' }
@@ -44,10 +81,11 @@ $uninstaller = Join-Path $installDir 'unins000.exe'
 $process = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru -Wait -WindowStyle Hidden
 if ($process.ExitCode -ne 0) { throw "Uninstall failed: $($process.ExitCode)" }
 if (Test-Path -LiteralPath (Join-Path $installDir 'celltray-widgets.exe')) { throw 'Uninstall left the application binary behind' }
+if (Test-Path -LiteralPath (Join-Path $installDir 'licenses')) { throw 'Uninstall left updated dependency notices behind' }
 if (Test-Path -LiteralPath $registry) { throw 'Uninstall left the Installed Apps entry behind' }
 if (Test-Path -LiteralPath $shortcut) { throw 'Uninstall left the Start menu shortcut behind' }
 if (Test-Path -LiteralPath $desktopShortcut) { throw 'Uninstall left the desktop shortcut behind' }
 if (Get-ItemProperty -LiteralPath $startupKey -Name CellTray -ErrorAction SilentlyContinue) { throw 'Uninstall left startup registration behind' }
 if ((Get-Content -Raw -LiteralPath $settings) -ne $sentinel) { throw 'Uninstall removed user preferences' }
 Remove-Item -LiteralPath $settings
-Write-Output "Verified $version install, repair, Start menu, Installed Apps, version resources, uninstall and settings preservation."
+Write-Output "Verified $version install, internal update, tamper rejection, cancellation, repair, Start menu, Installed Apps, version resources, uninstall and settings preservation."

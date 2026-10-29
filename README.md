@@ -6,7 +6,7 @@ now includes hardware diagnostics and an early standalone Windows battery-cell s
 
 ## Install on Windows
 
-Download **CellTray-v003-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
+Download **CellTray-v004-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
 and run it. Exit any older running CellTray copy before installing.
 
 Setup installs for your account in `%LOCALAPPDATA%/Programs/CellTray`, creates a
@@ -75,11 +75,19 @@ clicking a battery cell opens this tab. **About** includes version, credits,
 Restart and follows the Windows taskbar's light/dark theme.
 
 Public app versions and release tags use sequential names: **v001**, **v002**,
-**v003**, and so on. The About button checks the latest published GitHub Release
-over HTTPS on a background thread; it does not download or install code. Until a
-release is published, it reports that no releases are available. Network/HTTP
-failures are shown without claiming the app is current. Automatic updates remain
-future work.
+**v003**, and so on. In **About**, choose **Check for updates**, then **Update now**.
+CellTray downloads the latest Windows ZIP over HTTPS, verifies its SHA-256 digest
+against GitHub release metadata, and stages the package before closing. A separate
+helper replaces the app files and restarts CellTray without running Setup. Settings,
+shortcuts, and startup preferences are preserved. If replacement fails, the helper
+attempts to restore the previous files. Network and verification failures leave the
+running app unchanged. Updates require a writable application folder.
+
+**v004 is the first build with internal updating.** Users on v003 or earlier must
+install v004 once; later releases can be installed from inside the app. The installer
+remains available for first installation and recovery. Updates are user initiated;
+CellTray does not download or apply them silently in the background.
+
 CellTray also provides one notification-area control icon: a white cell membrane
 with a nucleus and two small dots. Click or right-click it for **Show battery cells**, refresh,
 devices, options, restart, and exit. Windows may place it under the tray overflow

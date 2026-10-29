@@ -14,7 +14,7 @@ OUTPUT = ROOT / "target/package"
 STAGE = OUTPUT / f"CellTray-{VERSION}-windows-x64"
 STAGE.mkdir(parents=True, exist_ok=True)
 
-for name in ("celltray-widgets.exe", "celltray.exe"):
+for name in ("celltray-widgets.exe", "celltray.exe", "celltray-updater.exe"):
     source = ROOT / "target/release" / name
     binary = source.read_bytes()
     offset = struct.unpack_from("<I", binary, 0x3C)[0]
@@ -62,7 +62,7 @@ Supported, verified hardware: Logitech Alto Keys K98M and MX Master 4 through th
 046d:c548 Logi Bolt receiver; Fractal Design Scape through its 36bc:0001 dongle.
 Scape charging state is unknown. Bluetooth and other receiver IDs are unsupported.
 
-Options contains General, Devices and About tabs, update checking and Restart.
+Options contains General, Devices and About tabs, verified in-app updates and Restart.
 User preferences: %LOCALAPPDATA%\\CellTray\\settings.json
 Diagnostic CLI: celltray.exe diagnose > diagnostics.json
 Review hardware identifiers before sharing diagnostics publicly.
@@ -71,7 +71,9 @@ This is an unsigned Windows preview. The taskbar cells are an overlay and need
 free space on the left of a bottom, centered taskbar. USB handoff, suspend/resume,
 Explorer recovery and screen-capture overlays need broader real-world testing.
 macOS/Linux diagnostics pass CI, but their widget interfaces are not implemented.
-Automatic update installation, multi-monitor placement and notifications are not implemented.
+Use About > Check for updates > Update now to download, verify and apply updates.
+CellTray restarts after updating; preferences and shortcuts are preserved.
+Multi-monitor placement and notifications are not implemented.
 
 Source and issues: https://github.com/Baz-Studios-LLC/CellTray
 See LICENSE, THIRD_PARTY_NOTICES, DEPENDENCIES.md, licenses/, and assets/icons/LICENSE.

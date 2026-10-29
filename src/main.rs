@@ -1,4 +1,6 @@
 mod devices;
+#[cfg(windows)]
+pub mod updater;
 mod version;
 #[cfg(windows)]
 mod widget;

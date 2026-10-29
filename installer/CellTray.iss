@@ -54,3 +54,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\celltray-widgets.exe"; Description: "Launch CellTray"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; Internal updates may add dependency notices absent from the original install log.
+Type: filesandordirs; Name: "{app}\licenses"
+Type: filesandordirs; Name: "{app}\assets"

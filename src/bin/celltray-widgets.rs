@@ -2,6 +2,9 @@
 #[path = "../devices/mod.rs"]
 #[cfg(windows)]
 mod devices;
+#[cfg(windows)]
+#[path = "../updater.rs"]
+pub mod updater;
 #[path = "../version.rs"]
 mod version;
 #[cfg(windows)]

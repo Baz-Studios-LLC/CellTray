@@ -18,6 +18,11 @@ const CARD: u32 = 0x00251f1b;
 const TEXT: u32 = 0x00f2eeeb;
 const MUTED: u32 = 0x00aca298;
 const ACCENT: u32 = 0x00b6e6a3;
+enum UpdateEvent {
+    Checked(Result<update_check::ReleaseStatus, String>),
+    Progress(u64, u64),
+    Ready(Result<crate::updater::Prepared, String>),
+}
 struct State {
     fonts: [HFONT; 4],
     brush: HBRUSH,
@@ -26,7 +31,8 @@ struct State {
     page: u8,
     refresh_seconds: u64,
     update_text: String,
-    update_rx: Option<mpsc::Receiver<Result<update_check::ReleaseStatus, String>>>,
+    update_rx: Option<mpsc::Receiver<UpdateEvent>>,
+    available: Option<crate::updater::Release>,
 }
 pub fn window() -> HWND {
     WINDOW.load(Ordering::Relaxed) as HWND
@@ -93,6 +99,7 @@ unsafe fn create(owner: HWND, visible: bool) {
         refresh_seconds: 30,
         update_text: String::new(),
         update_rx: None,
+        available: None,
     });
     let raw = Box::into_raw(data);
     let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
@@ -441,24 +448,61 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         }
         WM_ERASEBKGND => 1,
         WM_TIMER => {
-            let received = state(hwnd)
+            let events = state(hwnd)
                 .update_rx
                 .as_ref()
-                .and_then(|rx| rx.try_recv().ok());
-            if let Some(result) = received {
-                state(hwnd).update_rx = None;
-                state(hwnd).update_text = match result {
-                    Ok(update_check::ReleaseStatus::Current) => "You’re up to date.".into(),
-                    Ok(update_check::ReleaseStatus::NoRelease) => {
-                        "No releases have been published yet.".into()
+                .map(|rx| rx.try_iter().collect::<Vec<_>>())
+                .unwrap_or_default();
+            for event in events {
+                match event {
+                    UpdateEvent::Checked(result) => {
+                        state(hwnd).update_rx = None;
+                        state(hwnd).available = None;
+                        state(hwnd).update_text = match result {
+                            Ok(update_check::ReleaseStatus::Current) => "You’re up to date.".into(),
+                            Ok(update_check::ReleaseStatus::NoRelease) => {
+                                "No releases have been published yet.".into()
+                            }
+                            Ok(update_check::ReleaseStatus::Available(release)) => {
+                                let text = format!("{} is available.", release.label());
+                                state(hwnd).available = Some(release);
+                                text
+                            }
+                            Err(error) => error,
+                        };
+                        EnableWindow(GetDlgItem(hwnd, 31), 1);
+                        SetWindowTextW(
+                            GetDlgItem(hwnd, 31),
+                            wide(if state(hwnd).available.is_some() {
+                                "Update now"
+                            } else {
+                                "Check for updates"
+                            })
+                            .as_ptr(),
+                        );
+                        InvalidateRect(hwnd, null(), 0);
                     }
-                    Ok(update_check::ReleaseStatus::Available(version)) => {
-                        format!("Version {version} is available on GitHub.")
+                    UpdateEvent::Progress(done, total) => {
+                        let percent = done.saturating_mul(100).checked_div(total).unwrap_or(0);
+                        state(hwnd).update_text = format!("Downloading update… {percent}%");
+                        InvalidateRect(hwnd, null(), 0);
                     }
-                    Err(error) => error,
-                };
-                EnableWindow(GetDlgItem(hwnd, 31), 1);
-                InvalidateRect(hwnd, null(), 0);
+                    UpdateEvent::Ready(result) => {
+                        state(hwnd).update_rx = None;
+                        let result = result.and_then(|prepared| crate::updater::commit(&prepared));
+                        match result {
+                            Ok(()) => {
+                                state(hwnd).update_text = "Restarting CellTray…".into();
+                                PostQuitMessage(0);
+                            }
+                            Err(error) => {
+                                state(hwnd).update_text = error;
+                                EnableWindow(GetDlgItem(hwnd, 31), 1);
+                            }
+                        }
+                        InvalidateRect(hwnd, null(), 0);
+                    }
+                }
             }
             if state(hwnd).page <= 1 {
                 InvalidateRect(hwnd, null(), 0);
@@ -1068,7 +1112,13 @@ unsafe fn button(hwnd: HWND, item: &DRAWITEMSTRUCT) {
         match item.CtlID {
             1 => "Save changes",
             30 => "Refresh now",
-            31 => "Check for updates",
+            31 => {
+                if state(hwnd).available.is_some() {
+                    "Update now"
+                } else {
+                    "Check for updates"
+                }
+            }
             32 => "View on GitHub",
             33 => "Restart",
             _ => "Cancel",
@@ -1230,12 +1280,26 @@ unsafe fn start_update(hwnd: HWND) {
     }
     let (tx, rx) = mpsc::channel();
     state(hwnd).update_rx = Some(rx);
-    state(hwnd).update_text = "Checking GitHub Releases…".into();
     EnableWindow(GetDlgItem(hwnd, 31), 0);
+    if let Some(release) = state(hwnd).available.clone() {
+        state(hwnd).update_text = format!("Downloading {}…", release.label());
+        std::thread::spawn(move || {
+            let result = crate::updater::prepare(&release, |done, total| {
+                let _ = tx.send(UpdateEvent::Progress(done, total));
+            })
+            .and_then(|prepared| {
+                crate::updater::launch(&prepared)?;
+                Ok(prepared)
+            });
+            let _ = tx.send(UpdateEvent::Ready(result));
+        });
+    } else {
+        state(hwnd).update_text = "Checking GitHub Releases…".into();
+        std::thread::spawn(move || {
+            let _ = tx.send(UpdateEvent::Checked(update_check::check()));
+        });
+    }
     InvalidateRect(hwnd, null(), 0);
-    std::thread::spawn(move || {
-        let _ = tx.send(update_check::check());
-    });
 }
 unsafe fn devices_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
     let fonts = state(hwnd).fonts;
