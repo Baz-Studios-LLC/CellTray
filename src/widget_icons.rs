@@ -5,11 +5,15 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use windows_sys::Win32::Graphics::Gdi::*;
-const SVGS: [&str; 4] = [
+const SVGS: [&str; 8] = [
     include_str!("../assets/icons/keyboard.svg"),
     include_str!("../assets/icons/mouse.svg"),
     include_str!("../assets/icons/headphones.svg"),
     include_str!("../assets/icons/celltray.svg"),
+    include_str!("../assets/icons/sliders-horizontal.svg"),
+    include_str!("../assets/icons/battery.svg"),
+    include_str!("../assets/icons/info.svg"),
+    include_str!("../assets/icons/clock-3.svg"),
 ];
 type Cache = HashMap<(usize, i32, u32), Vec<u8>>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -166,7 +170,7 @@ mod tests {
     }
     #[test]
     fn embedded_svgs_render_at_tray_and_high_dpi_sizes() {
-        for icon in 0..4 {
+        for icon in 0..8 {
             for size in [16, 24, 32, 48] {
                 let pixels = raster(icon, size, 0x00f2f2f2).unwrap();
                 assert_eq!(pixels.len(), (size * size * 4) as usize);

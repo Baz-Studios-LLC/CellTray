@@ -44,6 +44,10 @@ Restart removes the tray icon, destroys Options and the strip, releases the name
 mutex, then launches the same executable with its current arguments.
 The manual update check uses native WinHTTP on a worker, a bounded response body,
 and strict numbered release tags (v001, v002, ...). No update is installed.
+The refresh selector is an owner-drawn button and dark native popup, sharing the
+same surfaces, typography, hover states, and rounded keyboard-focus treatment as
+the rest of the window. Numeric inputs retain native text editing inside centered
+custom fields. General's threshold bar previews valid edits before saving.
 A hidden-window render test checks its native controls
 without capturing or operating the user's desktop. Exit ends the process and removes the
 window; the next launch starts with unknown values until a fresh poll completes.

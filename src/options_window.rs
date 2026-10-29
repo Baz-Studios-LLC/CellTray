@@ -5,7 +5,9 @@ use super::*;
 mod update_check;
 const SIDE: i32 = 160;
 
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetFocus, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows_sys::Win32::{Graphics::Dwm::*, UI::Controls::*};
 static WINDOW: AtomicUsize = AtomicUsize::new(0);
 const REFRESH: i32 = 10;
@@ -17,11 +19,12 @@ const TEXT: u32 = 0x00f2eeeb;
 const MUTED: u32 = 0x00aca298;
 const ACCENT: u32 = 0x00b6e6a3;
 struct State {
-    fonts: [HFONT; 3],
+    fonts: [HFONT; 4],
     brush: HBRUSH,
     input_brush: HBRUSH,
     error: String,
     page: u8,
+    refresh_seconds: u64,
     update_text: String,
     update_rx: Option<mpsc::Receiver<Result<update_check::ReleaseStatus, String>>>,
 }
@@ -77,11 +80,17 @@ unsafe fn create(owner: HWND, visible: bool) {
     }
     .max(96) as i32;
     let data = Box::new(State {
-        fonts: [font(10, 600, dpi), font(26, 600, dpi), font(12, 400, dpi)],
+        fonts: [
+            font(10, 400, dpi),
+            font(28, 600, dpi),
+            font(12, 400, dpi),
+            font(13, 600, dpi),
+        ],
         brush: CreateSolidBrush(CARD),
         input_brush: CreateSolidBrush(0x00362d26),
         error: String::new(),
         page: 0,
+        refresh_seconds: 30,
         update_text: String::new(),
         update_rx: None,
     });
@@ -139,6 +148,12 @@ unsafe fn create(owner: HWND, visible: bool) {
         (&corner as *const i32).cast(),
         4,
     );
+    SendMessageW(
+        hwnd,
+        WM_CHANGEUISTATE,
+        (UIS_SET | (UISF_HIDEFOCUS << 16)) as usize,
+        0,
+    );
     if visible {
         ShowWindow(hwnd, SW_SHOWNORMAL);
         SetForegroundWindow(hwnd);
@@ -174,6 +189,9 @@ unsafe fn control(
     );
     SendMessageW(result, WM_SETFONT, state(hwnd).fonts[2] as usize, 1);
     SetWindowTheme(result, wide("DarkMode_CFD").as_ptr(), null());
+    if class == "BUTTON" || class == "EDIT" {
+        SetWindowSubclass(result, Some(control_events), 1, 0);
+    }
     result
 }
 unsafe fn init(hwnd: HWND) {
@@ -236,30 +254,18 @@ unsafe fn init(hwnd: HWND) {
         .get()
         .and_then(|ui| ui.lock().ok().map(|ui| ui.preferences.clone()))
         .unwrap_or_default();
-    let combo = control(
+    state(hwnd).refresh_seconds = prefs.refresh_seconds;
+    control(
         hwnd,
-        "COMBOBOX",
-        "",
+        "BUTTON",
+        &format!("{} seconds", prefs.refresh_seconds),
         REFRESH,
-        CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
+        BS_OWNERDRAW as u32,
         390,
         178,
         160,
-        180,
+        36,
     );
-    for interval in settings::INTERVALS {
-        SendMessageW(
-            combo,
-            CB_ADDSTRING,
-            0,
-            wide(&format!("{interval} seconds")).as_ptr() as isize,
-        );
-    }
-    let selected = settings::INTERVALS
-        .iter()
-        .position(|v| *v == prefs.refresh_seconds)
-        .unwrap_or(2);
-    SendMessageW(combo, CB_SETCURSEL, selected, 0);
     let yellow = control(
         hwnd,
         "EDIT",
@@ -384,8 +390,12 @@ unsafe fn read_percent(hwnd: HWND, id: i32) -> Option<u8> {
 unsafe fn save(hwnd: HWND) {
     let yellow = read_percent(hwnd, YELLOW);
     let red = read_percent(hwnd, RED);
-    let selected = SendMessageW(GetDlgItem(hwnd, REFRESH), CB_GETCURSEL, 0, 0);
-    let error = match (yellow, red, settings::INTERVALS.get(selected as usize)) {
+    let selected = state(hwnd).refresh_seconds;
+    let error = match (
+        yellow,
+        red,
+        settings::INTERVALS.iter().find(|v| **v == selected),
+    ) {
         (Some(yellow), Some(red), Some(seconds)) if settings::valid_thresholds(yellow, red) => {
             if let Some(ui) = UI.get()
                 && let Ok(mut ui) = ui.lock()
@@ -450,7 +460,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 EnableWindow(GetDlgItem(hwnd, 31), 1);
                 InvalidateRect(hwnd, null(), 0);
             }
-            if state(hwnd).page == 1 {
+            if state(hwnd).page <= 1 {
                 InvalidateRect(hwnd, null(), 0);
             }
             0
@@ -480,6 +490,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         WM_COMMAND => {
             match w as u16 {
                 1 => save(hwnd),
+                10 => dropdown(hwnd),
                 20..=22 => change_page(hwnd, (w as u16 - 20) as u8),
                 30 => {
                     if let Some(ui) = UI.get()
@@ -534,8 +545,24 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 state(hwnd).brush
             }) as isize
         }
+        WM_MEASUREITEM => {
+            let item = &mut *(l as *mut MEASUREITEMSTRUCT);
+            if item.CtlType == ODT_MENU {
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                item.itemWidth = 160 * dpi / 96;
+                item.itemHeight = 32 * dpi / 96;
+                1
+            } else {
+                DefWindowProcW(hwnd, msg, w, l)
+            }
+        }
         WM_DRAWITEM => {
-            button(hwnd, &*(l as *const DRAWITEMSTRUCT));
+            let item = &*(l as *const DRAWITEMSTRUCT);
+            if item.CtlType == ODT_MENU {
+                dropdown_row(hwnd, item);
+            } else {
+                button(hwnd, item);
+            }
             1
         }
         WM_NCDESTROY => {
@@ -601,13 +628,56 @@ unsafe fn rounded(dc: HDC, rect: RECT, color: u32, radius: i32) {
     SelectObject(dc, oldb);
     DeleteObject(b);
 }
+unsafe fn gradient(dc: HDC, rect: RECT, top: u32, bottom: u32) {
+    let vertex = |x: i32, y: i32, color: u32| TRIVERTEX {
+        x,
+        y,
+        Red: ((color & 255) << 8) as u16,
+        Green: (((color >> 8) & 255) << 8) as u16,
+        Blue: (((color >> 16) & 255) << 8) as u16,
+        Alpha: 0xff00,
+    };
+    let vertices = [
+        vertex(rect.left, rect.top, top),
+        vertex(rect.right, rect.bottom, bottom),
+    ];
+    let mesh = GRADIENT_RECT {
+        UpperLeft: 0,
+        LowerRight: 1,
+    };
+    GradientFill(
+        dc,
+        vertices.as_ptr(),
+        2,
+        (&mesh as *const GRADIENT_RECT).cast(),
+        1,
+        GRADIENT_FILL_RECT_V,
+    );
+}
+unsafe fn surface(dc: HDC, rect: RECT, dpi: i32) {
+    let saved = SaveDC(dc);
+    let radius = scaled(14, dpi);
+    BeginPath(dc);
+    RoundRect(
+        dc,
+        rect.left,
+        rect.top,
+        rect.right,
+        rect.bottom,
+        radius,
+        radius,
+    );
+    EndPath(dc);
+    SelectClipPath(dc, RGN_AND);
+    gradient(dc, rect, 0x0028221e, CARD);
+    RestoreDC(dc, saved);
+    outline(dc, rect, 0x003b332a, scaled(1, dpi), radius);
+}
 unsafe fn canvas(hwnd: HWND, dc: HDC, bounds: RECT) {
     let dpi = GetDpiForWindow(hwnd).max(96) as i32;
     let s = |v| scaled(v, dpi);
     let fonts = state(hwnd).fonts;
-    let b = CreateSolidBrush(BG);
-    FillRect(dc, &bounds, b);
-    DeleteObject(b);
+    gradient(dc, bounds, 0x001d1813, BG);
     let side = CreateSolidBrush(0x00120f0d);
     let sidebar = RECT {
         left: 0,
@@ -618,7 +688,7 @@ unsafe fn canvas(hwnd: HWND, dc: HDC, bounds: RECT) {
     FillRect(dc, &sidebar, side);
     DeleteObject(side);
     icons::draw(dc, 3, s(24), s(22), s(22), ACCENT);
-    text(dc, "CELLTRAY", fonts[0], ACCENT, 54, 22, 100, 24, dpi);
+    text(dc, "CellTray", fonts[3], TEXT, 54, 22, 100, 24, dpi);
     text(
         dc,
         &crate::version::label(),
@@ -642,9 +712,28 @@ unsafe fn canvas(hwnd: HWND, dc: HDC, bounds: RECT) {
         RestoreDC(dc, saved);
         return;
     }
-    text(dc, "Options", fonts[1], TEXT, 24, 64, 550, 38, dpi);
-    for (y, h) in [(150, 92), (258, 150)] {
+    text(dc, "General", fonts[1], TEXT, 24, 64, 550, 38, dpi);
+    let values = cells();
+    let (yellow, red) = thresholds();
+    for (i, (_, value, charging)) in values.iter().enumerate() {
+        let x = 24 + i as i32 * 98;
+        let color = battery_color(value, *charging, yellow, red);
         rounded(
+            dc,
+            RECT {
+                left: s(x),
+                top: s(114),
+                right: s(x + 86),
+                bottom: s(138),
+            },
+            CARD,
+            s(8),
+        );
+        icons::draw(dc, i, s(x + 8), s(119), s(14), color);
+        text(dc, value, fonts[0], color, x + 30, 115, 50, 22, dpi);
+    }
+    for (y, h) in [(150, 92), (258, 150)] {
+        surface(
             dc,
             RECT {
                 left: s(24),
@@ -652,22 +741,22 @@ unsafe fn canvas(hwnd: HWND, dc: HDC, bounds: RECT) {
                 right: s(576),
                 bottom: s(y + h),
             },
-            CARD,
-            s(16),
+            dpi,
         );
     }
     text(
         dc,
         "Refresh interval",
-        fonts[2],
+        fonts[3],
         TEXT,
-        44,
-        176,
+        84,
+        178,
         300,
-        24,
+        36,
         dpi,
     );
-    text(dc, "Battery colors", fonts[2], TEXT, 44, 274, 490, 24, dpi);
+    icons::draw(dc, 7, s(44), s(183), s(26), MUTED);
+    text(dc, "Battery colors", fonts[3], TEXT, 44, 274, 490, 24, dpi);
     text(
         dc,
         "At or below these percentages",
@@ -691,15 +780,72 @@ unsafe fn canvas(hwnd: HWND, dc: HDC, bounds: RECT) {
             0x00362d26,
             s(8),
         );
+        let focused = GetFocus() == GetDlgItem(hwnd, if x == 148 { YELLOW } else { RED });
+        outline(
+            dc,
+            RECT {
+                left: s(x),
+                top: s(343),
+                right: s(x + 60),
+                bottom: s(373),
+            },
+            if focused { ACCENT } else { 0x00463b31 },
+            s(1),
+            s(8),
+        );
     }
     text(dc, "Yellow", fonts[2], 0x0048c5f5, 44, 342, 100, 32, dpi);
     text(dc, "%", fonts[2], MUTED, 216, 342, 24, 32, dpi);
     text(dc, "Red", fonts[2], 0x006565f2, 320, 342, 92, 32, dpi);
     text(dc, "%", fonts[2], MUTED, 488, 342, 24, 32, dpi);
+    let mut yellow = read_percent(hwnd, YELLOW).unwrap_or(20);
+    let mut red = read_percent(hwnd, RED).unwrap_or(10);
+    if !settings::valid_thresholds(yellow, red) {
+        (yellow, red) = thresholds();
+    }
+    rounded(
+        dc,
+        RECT {
+            left: s(44),
+            top: s(390),
+            right: s(556),
+            bottom: s(394),
+        },
+        0x00483e34,
+        s(4),
+    );
+    rounded(
+        dc,
+        RECT {
+            left: s(44),
+            top: s(390),
+            right: s(44 + 512 * i32::from(yellow) / 100),
+            bottom: s(394),
+        },
+        0x0048c5f5,
+        s(4),
+    );
+    rounded(
+        dc,
+        RECT {
+            left: s(44),
+            top: s(390),
+            right: s(44 + 512 * i32::from(red) / 100),
+            bottom: s(394),
+        },
+        0x006565f2,
+        s(4),
+    );
     let error = state(hwnd).error.clone();
     if !error.is_empty() {
         text(dc, &error, fonts[0], 0x006565f2, 25, 426, 550, 30, dpi);
     }
+    let divider = CreatePen(PS_SOLID, s(1).max(1), 0x002d261f);
+    let old = SelectObject(dc, divider);
+    MoveToEx(dc, s(24), s(466), null_mut());
+    LineTo(dc, s(576), s(466));
+    SelectObject(dc, old);
+    DeleteObject(divider);
     RestoreDC(dc, saved);
 }
 unsafe fn paint(hwnd: HWND) {
@@ -723,20 +869,93 @@ unsafe fn paint(hwnd: HWND) {
     }
     EndPaint(hwnd, &ps);
 }
+unsafe extern "system" fn control_events(
+    control: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    id: usize,
+    _: usize,
+) -> LRESULT {
+    match msg {
+        WM_MOUSEMOVE if GetWindowLongPtrW(control, GWLP_USERDATA) == 0 => {
+            SetWindowLongPtrW(control, GWLP_USERDATA, 1);
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: control,
+                dwHoverTime: 0,
+            };
+            TrackMouseEvent(&mut track);
+            InvalidateRect(control, null(), 0);
+        }
+        WM_MOUSELEAVE => {
+            SetWindowLongPtrW(control, GWLP_USERDATA, 0);
+            InvalidateRect(control, null(), 0);
+        }
+        WM_SETFOCUS | WM_KILLFOCUS => {
+            InvalidateRect(GetParent(control), null(), 0);
+        }
+        WM_NCDESTROY => {
+            RemoveWindowSubclass(control, Some(control_events), id);
+        }
+        _ => {}
+    }
+    DefSubclassProc(control, msg, w, l)
+}
+unsafe fn outline(dc: HDC, rect: RECT, color: u32, width: i32, radius: i32) {
+    let pen = CreatePen(PS_SOLID, width.max(1), color);
+    let oldp = SelectObject(dc, pen);
+    let oldb = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(
+        dc,
+        rect.left,
+        rect.top,
+        rect.right,
+        rect.bottom,
+        radius,
+        radius,
+    );
+    SelectObject(dc, oldb);
+    SelectObject(dc, oldp);
+    DeleteObject(pen);
+}
+unsafe fn focus_ring(item: &DRAWITEMSTRUCT, dpi: i32) {
+    if item.itemState & ODS_FOCUS != 0 && item.itemState & ODS_NOFOCUSRECT == 0 {
+        let mut rect = item.rcItem;
+        InflateRect(&mut rect, -scaled(2, dpi), -scaled(2, dpi));
+        outline(item.hDC, rect, ACCENT, scaled(1, dpi), scaled(10, dpi));
+    }
+}
 unsafe fn button(hwnd: HWND, item: &DRAWITEMSTRUCT) {
+    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+    let s = |v| scaled(v, dpi);
+    let hover = GetWindowLongPtrW(item.hwndItem, GWLP_USERDATA) != 0;
+    let pressed = item.itemState & ODS_SELECTED != 0;
+    let nav = (20..=22).contains(&item.CtlID);
+    let background = if nav {
+        0x00120f0d
+    } else if item.CtlID == REFRESH as u32 {
+        CARD
+    } else {
+        BG
+    };
+    let brush = CreateSolidBrush(background);
+    FillRect(item.hDC, &item.rcItem, brush);
+    DeleteObject(brush);
     if item.CtlID == 3 || item.CtlID == 4 {
-        let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-        let b = CreateSolidBrush(if item.itemState & ODS_SELECTED != 0 {
-            CARD
-        } else {
-            BG
-        });
-        FillRect(item.hDC, &item.rcItem, b);
-        DeleteObject(b);
+        if hover || pressed {
+            rounded(
+                item.hDC,
+                item.rcItem,
+                if item.CtlID == 3 { 0x004644b5 } else { CARD },
+                s(9),
+            );
+        }
         let cx = (item.rcItem.left + item.rcItem.right) / 2;
         let cy = (item.rcItem.top + item.rcItem.bottom) / 2;
-        let half = scaled(5, dpi);
-        let pen = CreatePen(PS_SOLID, scaled(1, dpi).max(1), MUTED);
+        let half = s(5);
+        let pen = CreatePen(PS_SOLID, s(1).max(1), if hover { TEXT } else { MUTED });
         let old = SelectObject(item.hDC, pen);
         if item.CtlID == 3 {
             MoveToEx(item.hDC, cx - half, cy - half, null_mut());
@@ -749,77 +968,229 @@ unsafe fn button(hwnd: HWND, item: &DRAWITEMSTRUCT) {
         }
         SelectObject(item.hDC, old);
         DeleteObject(pen);
-        if item.itemState & ODS_FOCUS != 0 {
-            DrawFocusRect(item.hDC, &item.rcItem);
-        }
+        focus_ring(item, dpi);
         return;
     }
-    let background = CreateSolidBrush(BG);
-    FillRect(item.hDC, &item.rcItem, background);
-    DeleteObject(background);
-    if (20..=22).contains(&item.CtlID) {
-        let active = state(hwnd).page == (item.CtlID - 20) as u8;
-        rounded(
+    if nav {
+        let index = (item.CtlID - 20) as usize;
+        let active = state(hwnd).page == index as u8;
+        if active || hover {
+            rounded(
+                item.hDC,
+                item.rcItem,
+                if active { 0x002c2920 } else { CARD },
+                s(10),
+            );
+        }
+        if active {
+            let r = item.rcItem;
+            rounded(
+                item.hDC,
+                RECT {
+                    left: r.left + s(5),
+                    top: r.top + s(11),
+                    right: r.left + s(8),
+                    bottom: r.bottom - s(11),
+                },
+                ACCENT,
+                s(3),
+            );
+        }
+        icons::draw(
             item.hDC,
-            item.rcItem,
-            if active { CARD } else { 0x00120f0d },
-            scaled(10, GetDpiForWindow(hwnd).max(96) as i32),
+            4 + index,
+            item.rcItem.left + s(17),
+            item.rcItem.top + s(11),
+            s(16),
+            if active { ACCENT } else { MUTED },
         );
         let old = SelectObject(item.hDC, state(hwnd).fonts[2]);
-        SetTextColor(item.hDC, if active { ACCENT } else { MUTED });
+        SetTextColor(item.hDC, if active { TEXT } else { MUTED });
         SetBkMode(item.hDC, TRANSPARENT as i32);
         let mut r = item.rcItem;
-        r.left += scaled(14, GetDpiForWindow(hwnd).max(96) as i32);
+        r.left += s(44);
         DrawTextW(
             item.hDC,
-            wide(["General", "Devices", "About"][(item.CtlID - 20) as usize]).as_ptr(),
+            wide(["General", "Devices", "About"][index]).as_ptr(),
             -1,
             &mut r,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
-        if item.itemState & ODS_FOCUS != 0 {
-            DrawFocusRect(item.hDC, &r);
-        }
         SelectObject(item.hDC, old);
+        focus_ring(item, dpi);
         return;
     }
     let primary = matches!(item.CtlID, 1 | 30 | 31);
-    let pressed = item.itemState & ODS_SELECTED != 0;
-    let color = if primary {
-        if pressed { 0x009fc58d } else { ACCENT }
+    let disabled = item.itemState & ODS_DISABLED != 0;
+    let color = if disabled {
+        CARD
+    } else if primary {
+        if pressed {
+            0x009fc58d
+        } else if hover {
+            0x00c6f2b5
+        } else {
+            ACCENT
+        }
     } else if pressed {
-        0x003e332b
+        0x00483c32
+    } else if hover {
+        0x0042382f
     } else {
-        0x00312823
+        0x00362d26
     };
-    rounded(
-        item.hDC,
-        item.rcItem,
-        color,
-        scaled(10, GetDpiForWindow(hwnd).max(96) as i32),
-    );
+    rounded(item.hDC, item.rcItem, color, s(9));
+    if !primary {
+        outline(
+            item.hDC,
+            item.rcItem,
+            if hover { 0x00615144 } else { 0x00463b31 },
+            s(1),
+            s(9),
+        );
+    }
     let old = SelectObject(item.hDC, state(hwnd).fonts[2]);
-    SetTextColor(item.hDC, if primary { BG } else { TEXT });
+    SetTextColor(
+        item.hDC,
+        if disabled {
+            MUTED
+        } else if primary {
+            BG
+        } else {
+            TEXT
+        },
+    );
     SetBkMode(item.hDC, TRANSPARENT as i32);
     let mut rect = item.rcItem;
-    DrawTextW(
-        item.hDC,
-        wide(match item.CtlID {
+    let caption = if item.CtlID == REFRESH as u32 {
+        format!("{} seconds", state(hwnd).refresh_seconds)
+    } else {
+        match item.CtlID {
             1 => "Save changes",
             30 => "Refresh now",
             31 => "Check for updates",
             32 => "View on GitHub",
             33 => "Restart",
             _ => "Cancel",
-        })
-        .as_ptr(),
+        }
+        .into()
+    };
+    if item.CtlID == REFRESH as u32 {
+        rect.left += s(14);
+        rect.right -= s(32);
+    }
+    let alignment = if item.CtlID == REFRESH as u32 {
+        DT_LEFT
+    } else {
+        DT_CENTER
+    };
+    DrawTextW(
+        item.hDC,
+        wide(&caption).as_ptr(),
         -1,
         &mut rect,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        alignment | DT_VCENTER | DT_SINGLELINE,
     );
-    if item.itemState & ODS_FOCUS != 0 {
-        InflateRect(&mut rect, -4, -4);
-        DrawFocusRect(item.hDC, &rect);
+    if item.CtlID == REFRESH as u32 {
+        let cx = item.rcItem.right - s(17);
+        let cy = (item.rcItem.top + item.rcItem.bottom) / 2;
+        let pen = CreatePen(PS_SOLID, s(1).max(1), MUTED);
+        let previous = SelectObject(item.hDC, pen);
+        MoveToEx(item.hDC, cx - s(4), cy - s(2), null_mut());
+        LineTo(item.hDC, cx, cy + s(2));
+        LineTo(item.hDC, cx + s(4), cy - s(2));
+        SelectObject(item.hDC, previous);
+        DeleteObject(pen);
+    }
+    SelectObject(item.hDC, old);
+    focus_ring(item, dpi);
+}
+unsafe fn dropdown(hwnd: HWND) {
+    let menu = CreatePopupMenu();
+    if menu.is_null() {
+        return;
+    }
+    let info = MENUINFO {
+        cbSize: std::mem::size_of::<MENUINFO>() as u32,
+        fMask: MIM_BACKGROUND,
+        hbrBack: state(hwnd).brush,
+        ..std::mem::zeroed()
+    };
+    SetMenuInfo(menu, &info);
+    for (index, seconds) in settings::INTERVALS.iter().enumerate() {
+        let mut label = wide(&format!("{seconds} seconds"));
+        let row = MENUITEMINFOW {
+            cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+            fMask: MIIM_ID | MIIM_FTYPE | MIIM_STRING | MIIM_STATE,
+            wID: 300 + index as u32,
+            fType: MFT_OWNERDRAW,
+            dwTypeData: label.as_mut_ptr(),
+            cch: (label.len() - 1) as u32,
+            fState: if *seconds == state(hwnd).refresh_seconds {
+                MFS_CHECKED
+            } else {
+                0
+            },
+            ..std::mem::zeroed()
+        };
+        InsertMenuItemW(menu, u32::MAX, 1, &row);
+    }
+    let mut rect = std::mem::zeroed();
+    GetWindowRect(GetDlgItem(hwnd, REFRESH), &mut rect);
+    let command = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN,
+        rect.left,
+        rect.bottom + scaled(4, GetDpiForWindow(hwnd).max(96) as i32),
+        0,
+        hwnd,
+        null(),
+    );
+    DestroyMenu(menu);
+    if (300..=303).contains(&command) {
+        state(hwnd).refresh_seconds = settings::INTERVALS[(command - 300) as usize];
+        SetWindowTextW(
+            GetDlgItem(hwnd, REFRESH),
+            wide(&format!("{} seconds", state(hwnd).refresh_seconds)).as_ptr(),
+        );
+        InvalidateRect(GetDlgItem(hwnd, REFRESH), null(), 0);
+    }
+}
+unsafe fn dropdown_row(hwnd: HWND, item: &DRAWITEMSTRUCT) {
+    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+    let s = |v| scaled(v, dpi);
+    let b = CreateSolidBrush(if item.itemState & ODS_SELECTED != 0 {
+        0x0042382f
+    } else {
+        CARD
+    });
+    FillRect(item.hDC, &item.rcItem, b);
+    DeleteObject(b);
+    let index = (item.itemID - 300) as usize;
+    if index >= settings::INTERVALS.len() {
+        return;
+    }
+    let old = SelectObject(item.hDC, state(hwnd).fonts[2]);
+    SetBkMode(item.hDC, TRANSPARENT as i32);
+    SetTextColor(item.hDC, TEXT);
+    let mut r = item.rcItem;
+    r.left += s(30);
+    DrawTextW(
+        item.hDC,
+        wide(&format!("{} seconds", settings::INTERVALS[index])).as_ptr(),
+        -1,
+        &mut r,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+    );
+    if item.itemState & ODS_CHECKED != 0 {
+        let cy = (r.top + r.bottom) / 2;
+        let pen = CreatePen(PS_SOLID, s(1).max(1), ACCENT);
+        let previous = SelectObject(item.hDC, pen);
+        MoveToEx(item.hDC, s(10), cy, null_mut());
+        LineTo(item.hDC, s(14), cy + s(4));
+        LineTo(item.hDC, s(21), cy - s(4));
+        SelectObject(item.hDC, previous);
+        DeleteObject(pen);
     }
     SelectObject(item.hDC, old);
 }
@@ -873,7 +1244,7 @@ unsafe fn devices_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
     let values = cells();
     for (index, (name, value, charging)) in values.iter().enumerate() {
         let y = 144 + index as i32 * 94;
-        rounded(
+        surface(
             dc,
             RECT {
                 left: s(24),
@@ -881,8 +1252,7 @@ unsafe fn devices_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
                 right: s(576),
                 bottom: s(y + 80),
             },
-            CARD,
-            s(16),
+            dpi,
         );
         let (yellow, red) = thresholds();
         let color = battery_color(value, *charging, yellow, red);
@@ -905,7 +1275,7 @@ unsafe fn about_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
     let fonts = state(hwnd).fonts;
     let s = |v| scaled(v, dpi);
     text(dc, "About", fonts[1], TEXT, 24, 64, 550, 38, dpi);
-    rounded(
+    surface(
         dc,
         RECT {
             left: s(24),
@@ -913,8 +1283,7 @@ unsafe fn about_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
             right: s(576),
             bottom: s(390),
         },
-        CARD,
-        s(16),
+        dpi,
     );
     icons::draw(dc, 3, s(44), s(166), s(48), ACCENT);
     text(dc, "CellTray", fonts[1], TEXT, 112, 164, 400, 36, dpi);
@@ -931,7 +1300,7 @@ unsafe fn about_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
     );
     text(
         dc,
-        "Baz Studios · MIT license",
+        "Baz Studios LLC · MIT license",
         fonts[2],
         MUTED,
         44,
@@ -1012,47 +1381,99 @@ mod tests {
             let old = SelectObject(dc, bitmap);
             assert_eq!(read_percent(hwnd, YELLOW), Some(20));
             assert_eq!(read_percent(hwnd, RED), Some(10));
-            canvas(hwnd, dc, rect);
-            for id in [REFRESH, YELLOW, RED, 1, 2, 3, 4, 20, 21, 22] {
-                let child = GetDlgItem(hwnd, id);
-                assert!(!child.is_null());
-                let mut child_rect = std::mem::zeroed();
-                GetWindowRect(child, &mut child_rect);
-                let mut origin = POINT {
-                    x: child_rect.left,
-                    y: child_rect.top,
+            assert_eq!(state(hwnd).refresh_seconds, 30);
+            for page in 0..=2 {
+                change_page(hwnd, page);
+                canvas(hwnd, dc, rect);
+                let active_controls = match page {
+                    0 => vec![REFRESH, YELLOW, RED, 1, 2],
+                    1 => vec![30],
+                    _ => vec![31, 32, 33],
                 };
-                ScreenToClient(hwnd, &mut origin);
-                let saved = SaveDC(dc);
-                SetViewportOrgEx(dc, origin.x, origin.y, null_mut());
-                SendMessageW(
-                    child,
-                    WM_PRINTCLIENT,
-                    dc as usize,
-                    (PRF_CLIENT | PRF_ERASEBKGND) as isize,
-                );
-                RestoreDC(dc, saved);
-            }
-            GdiFlush();
-            let mut bytes = std::slice::from_raw_parts(
-                bits as *const u8,
-                (rect.right * rect.bottom * 4) as usize,
-            )
-            .to_vec();
-            assert!(bytes.iter().any(|b| *b != 0));
-            for p in bytes.as_chunks_mut::<4>().0 {
-                p.swap(0, 2);
-                p[3] = 255;
-            }
-            if let Some(path) = std::env::var_os("CELLTRAY_RENDER_OPTIONS") {
-                resvg::tiny_skia::Pixmap::from_vec(
-                    bytes,
-                    resvg::tiny_skia::IntSize::from_wh(rect.right as u32, rect.bottom as u32)
-                        .unwrap(),
+                for id in active_controls.into_iter().chain([3, 4, 20, 21, 22]) {
+                    let child = GetDlgItem(hwnd, id);
+                    assert!(!child.is_null());
+                    let mut child_rect = std::mem::zeroed();
+                    GetWindowRect(child, &mut child_rect);
+                    let mut origin = POINT {
+                        x: child_rect.left,
+                        y: child_rect.top,
+                    };
+                    ScreenToClient(hwnd, &mut origin);
+                    let saved = SaveDC(dc);
+                    SetViewportOrgEx(dc, origin.x, origin.y, null_mut());
+                    let rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: child_rect.right - child_rect.left,
+                        bottom: child_rect.bottom - child_rect.top,
+                    };
+                    if id == YELLOW || id == RED {
+                        // Hidden EDIT controls do not print their text. This appearance
+                        // preview uses their real values/font; it is not a desktop capture.
+                        let value = read_percent(hwnd, id).unwrap().to_string();
+                        let old_font = SelectObject(dc, state(hwnd).fonts[2]);
+                        SetTextColor(dc, TEXT);
+                        SetBkColor(dc, 0x00362d26);
+                        let brush = CreateSolidBrush(0x00362d26);
+                        FillRect(dc, &rect, brush);
+                        DeleteObject(brush);
+                        SetBkMode(dc, TRANSPARENT as i32);
+                        let mut text_rect = rect;
+                        DrawTextW(
+                            dc,
+                            wide(&value).as_ptr(),
+                            -1,
+                            &mut text_rect,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                        );
+                        SelectObject(dc, old_font);
+                    } else {
+                        button(
+                            hwnd,
+                            &DRAWITEMSTRUCT {
+                                CtlType: ODT_BUTTON,
+                                CtlID: id as u32,
+                                itemAction: ODA_DRAWENTIRE,
+                                itemState: 0,
+                                hwndItem: child,
+                                hDC: dc,
+                                rcItem: rect,
+                                ..std::mem::zeroed()
+                            },
+                        );
+                    }
+                    RestoreDC(dc, saved);
+                }
+                GdiFlush();
+                let mut bytes = std::slice::from_raw_parts(
+                    bits as *const u8,
+                    (rect.right * rect.bottom * 4) as usize,
                 )
-                .unwrap()
-                .save_png(path)
-                .unwrap();
+                .to_vec();
+                assert!(bytes.iter().any(|b| *b != 0));
+                for pixel in bytes.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                    pixel[3] = 255;
+                }
+                if let Some(path) = std::env::var_os("CELLTRAY_RENDER_OPTIONS") {
+                    let mut path = std::path::PathBuf::from(path);
+                    if page != 0 {
+                        let stem = path.file_stem().unwrap().to_string_lossy();
+                        path.set_file_name(format!(
+                            "{stem}-{}.png",
+                            if page == 1 { "devices" } else { "about" }
+                        ));
+                    }
+                    resvg::tiny_skia::Pixmap::from_vec(
+                        bytes,
+                        resvg::tiny_skia::IntSize::from_wh(rect.right as u32, rect.bottom as u32)
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    .save_png(path)
+                    .unwrap();
+                }
             }
             SelectObject(dc, old);
             DeleteObject(bitmap);

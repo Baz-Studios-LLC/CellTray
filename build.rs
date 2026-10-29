@@ -12,7 +12,7 @@ fn main() {
             .set_icon("assets/icons/celltray.ico")
             .set("ProductName", "CellTray")
             .set("FileDescription", "CellTray")
-            .set("CompanyName", "Baz Studios")
+            .set("CompanyName", "Baz Studios LLC")
             .set("FileVersion", &version::label())
             .set("ProductVersion", &version::label())
             .set("LegalCopyright", "Copyright (c) 2026 Baz Studios LLC");

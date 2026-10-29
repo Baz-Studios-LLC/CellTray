@@ -56,6 +56,9 @@ Open **Options…** from the tray menu for the native, chromeless settings windo
 The sidebar has **General**, **Devices**, and **About** tabs. The header is draggable
 and provides custom minimize/close controls. Options is a normal window, separate
 from the taskbar strip, so it does not inherit its always-on-top behavior.
+Controls share the dark panel styling, with icon navigation, hover states, and
+rounded keyboard-focus indicators. General includes a live battery summary and a
+threshold-color preview. Mouse clicks do not add the old square tab focus outline.
 
 Under **General**, choose
 a refresh interval of 5, 15, 30, or 60 seconds and enter yellow/red thresholds
