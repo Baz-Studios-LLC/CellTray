@@ -654,7 +654,9 @@ fn cells_from(snapshot: Option<&Snapshot>) -> [(String, String, bool); 3] {
         for (index, category) in ["keyboard", "mouse", "headset"].iter().enumerate() {
             if let Some(r) = snapshot.readings.iter().find(|r| r.category == *category) {
                 result[index].0 = r.name.clone();
-                if r.status == "responding" {
+                if r.category == "headset" && r.status == "assumed_charging" {
+                    result[index].2 = true;
+                } else if r.status == "responding" {
                     result[index].1 = match r.percentage {
                         Some(p) => format!(
                             "{}{p}%",
@@ -756,11 +758,11 @@ fn thresholds() -> (u8, u8) {
     (20, 10)
 }
 fn battery_color(value: &str, charging: bool, yellow: u8, red: u8) -> u32 {
-    if value == "—" {
-        return 0x00989898;
-    }
     if charging {
         return 0x008bd9a7;
+    }
+    if value == "—" {
+        return 0x00989898;
     }
     let percent = value
         .trim_start_matches('~')
@@ -871,7 +873,7 @@ mod tests {
         assert_eq!(battery_color("0%", false, 20, 10), 0x006565f2);
         assert_eq!(battery_color("~15%", false, 30, 15), 0x006565f2);
         assert_eq!(battery_color("5%", true, 20, 10), 0x008bd9a7);
-        assert_eq!(battery_color("—", true, 20, 10), 0x00989898);
+        assert_eq!(battery_color("—", true, 20, 10), 0x008bd9a7);
         assert!(settings::valid_thresholds(100, 1));
         assert!(!settings::valid_thresholds(10, 20));
         assert!(!settings::valid_thresholds(10, 10));
@@ -890,6 +892,25 @@ mod tests {
         snapshot.received = Instant::now() - Duration::from_secs(91);
         assert_eq!(cells_from(Some(&snapshot))[0].1, "—");
         assert!(cells_from(None).iter().all(|c| c.1 == "—"));
+    }
+    #[test]
+    fn inferred_headset_charging_has_no_fabricated_percentage_and_expires() {
+        let mut reading = Reading::new("fixture".into(), "Scape", "headset");
+        reading.status = "assumed_charging".into();
+        reading.charging = Some(true);
+        reading.percentage = Some(85); // Even an accidental old value must not appear.
+        let mut snapshot = Snapshot {
+            readings: vec![reading],
+            received: Instant::now(),
+        };
+        let cells = cells_from(Some(&snapshot));
+        assert_eq!(cells[2].1, "—");
+        assert!(cells[2].2);
+        snapshot.received = Instant::now() - Duration::from_secs(91);
+        assert!(!cells_from(Some(&snapshot))[2].2);
+        snapshot.received = Instant::now();
+        snapshot.readings.clear(); // Receiver unplugged.
+        assert!(!cells_from(Some(&snapshot))[2].2);
     }
     #[test]
     fn approximate_and_charging_values_keep_their_meaning() {

@@ -41,6 +41,8 @@ impl Reading {
             .map(|d| d.as_secs());
     }
 }
+const POLL_TIMEOUT: &str =
+    "timeout: device asleep/off, empty slot, busy interface, or unsupported protocol";
 fn exchange(
     d: &HidDevice,
     packet: &[u8],
@@ -84,7 +86,7 @@ fn exchange(
             return Ok(buf[..n].to_vec());
         }
     }
-    Err("timeout: device asleep/off, empty slot, busy interface, or unsupported protocol".into())
+    Err(POLL_TIMEOUT.into())
 }
 pub struct Fractal;
 // Adapted protocol from MIT-licensed Niki2k1 Scape plugin; see THIRD_PARTY_NOTICES.
@@ -105,6 +107,28 @@ pub fn parse_scape(report: &[u8]) -> Result<Option<u8>, String> {
     }
     Ok(Some(p[14]))
 }
+// Temporary user-selected policy: a present receiver with an offline headset
+// is assumed to be on the charging dock. This is not a hardware charging signal.
+fn apply_scape_poll(reading: &mut Reading, result: Result<Option<u8>, String>) {
+    match result {
+        Ok(Some(percentage)) => {
+            reading.success();
+            reading.percentage = Some(percentage);
+            reading.precision = Some("device_reported_percentage".into());
+        }
+        Ok(None) => {
+            reading.success();
+            reading.status = "assumed_charging".into();
+            reading.charging = Some(true);
+        }
+        Err(error) if error == POLL_TIMEOUT => {
+            reading.status = "assumed_charging".into();
+            reading.charging = Some(true);
+            reading.error = Some(error);
+        }
+        Err(error) => reading.error = Some(error),
+    }
+}
 impl BatteryProvider for Fractal {
     fn poll(&self, api: &HidApi) -> Vec<Reading> {
         api.device_list()
@@ -120,25 +144,16 @@ impl BatteryProvider for Fractal {
                     "Fractal Scape",
                     "headset",
                 );
-                let result = (|| -> Result<(), String> {
+                let result = (|| -> Result<Option<u8>, String> {
                     let d = info.open_device(api).map_err(|e| e.to_string())?;
                     let mut packet = [0; 64];
                     packet[..3].copy_from_slice(&[2, 0xf1, 0x21]);
                     let response = exchange(&d, &packet, |p| {
                         p.starts_with(&[2, 0xf1, 0x21]) || p.starts_with(&[0xf1, 0x21])
                     })?;
-                    r.percentage = parse_scape(&response)?;
-                    r.success();
-                    if r.percentage.is_some() {
-                        r.precision = Some("device_reported_percentage".into());
-                    } else {
-                        r.status = "offline".into();
-                    }
-                    Ok(())
+                    parse_scape(&response)
                 })();
-                if let Err(e) = result {
-                    r.error = Some(e);
-                }
+                apply_scape_poll(&mut r, result);
                 r
             })
             .collect()
@@ -319,6 +334,25 @@ mod tests {
         p[14] = 101;
         assert!(parse_scape(&p).is_err());
         assert!(parse_scape(&p[..20]).is_err());
+    }
+    #[test]
+    fn scape_offline_assumption_excludes_io_and_invalid_report_errors() {
+        for result in [Ok(None), Err(POLL_TIMEOUT.into())] {
+            let mut reading = Reading::new("fixture".into(), "Scape", "headset");
+            apply_scape_poll(&mut reading, result);
+            assert_eq!(reading.charging, Some(true));
+            assert_eq!(reading.status, "assumed_charging");
+            assert_eq!(reading.percentage, None);
+        }
+        for result in [
+            Ok(Some(85)),
+            Err("device disconnected".into()),
+            Err("truncated or unrecognized Scape status".into()),
+        ] {
+            let mut reading = Reading::new("fixture".into(), "Scape", "headset");
+            apply_scape_poll(&mut reading, result);
+            assert_eq!(reading.charging, None);
+        }
     }
     #[test]
     fn unknown_charging_is_not_fabricated() {

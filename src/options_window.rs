@@ -1322,7 +1322,9 @@ unsafe fn devices_canvas(hwnd: HWND, dc: HDC, dpi: i32) {
         let color = battery_color(value, *charging, yellow, red);
         icons::draw(dc, index, s(44), s(y + 24), s(30), color);
         text(dc, name, fonts[2], TEXT, 90, y + 13, 340, 28, dpi);
-        let status = if value == "—" {
+        let status = if index == 2 && *charging {
+            "Charging assumed · headset disconnected"
+        } else if value == "—" {
             "Unavailable"
         } else if *charging {
             "Charging"

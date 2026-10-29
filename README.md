@@ -6,7 +6,7 @@ now includes hardware diagnostics and an early standalone Windows battery-cell s
 
 ## Install on Windows
 
-Download **CellTray-v005-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
+Download **CellTray-v006-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
 and run it. Exit any older running CellTray copy before installing.
 
 Setup installs for your account in `%LOCALAPPDATA%/Programs/CellTray`, creates a
@@ -28,7 +28,16 @@ on Windows and are the verified hardware targets for **v001**:
 |---|---|---|---|
 | Logitech Alto Keys K98M keyboard | Logi Bolt USB receiver | Verified | Reported by the device |
 | Logitech MX Master 4 mouse | Logi Bolt USB receiver | Verified | Reported by the device |
-| Fractal Design Scape headset | Scape 2.4 GHz USB dongle | Verified | Not available |
+| Fractal Design Scape headset | Scape 2.4 GHz USB dongle | Verified while connected | Assumed when headset is disconnected |
+
+For Scape, a present dongle with an offline status or poll timeout is temporarily
+assumed to mean the headset is docked and charging. Its icon turns green; the
+percentage shows **—** because a current battery value is unavailable. Devices
+labels this as **Charging assumed · headset disconnected**. Switching the headset
+off, going out of range, or a busy HID stream can also trigger this assumption.
+Unplugging the dongle, an access/I/O error, or a malformed response does not imply
+charging. Connected Scape charging state remains unknown. We can replace this
+policy if a reliable dock signal becomes available.
 
 The verified Bolt receiver has USB ID **046d:c548**; the Scape dongle has USB ID
 **36bc:0001**. The current providers specifically discover those receiver IDs.
