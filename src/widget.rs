@@ -11,6 +11,7 @@ mod settings;
 mod tray_menu;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 static STRIP_HWND: AtomicUsize = AtomicUsize::new(0);
+static MENU_HWND: AtomicUsize = AtomicUsize::new(0);
 static TRAY_ICON: AtomicUsize = AtomicUsize::new(0);
 static REFRESH_SECONDS: AtomicU64 = AtomicU64::new(30);
 static RESTART: AtomicBool = AtomicBool::new(false);
@@ -147,6 +148,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             CloseHandle(mutex);
             return Err(std::io::Error::last_os_error().into());
         }
+        let menu_owner = create_menu_owner(instance);
+        if menu_owner.is_null() {
+            DestroyWindow(controller);
+            CloseHandle(mutex);
+            return Err(std::io::Error::last_os_error().into());
+        }
+        MENU_HWND.store(menu_owner as usize, Ordering::Relaxed);
         if !preview() {
             SetLayeredWindowAttributes(controller, 0, 255, LWA_COLORKEY);
         }
@@ -211,6 +219,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             DestroyIcon(icon);
         }
         DestroyWindow(controller);
+        MENU_HWND.store(0, Ordering::Relaxed);
+        DestroyWindow(menu_owner);
         CloseHandle(mutex);
         if RESTART.load(Ordering::Relaxed) {
             use std::os::windows::process::CommandExt;
@@ -223,6 +233,41 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Popup menus need a foreground owner for dismissal. Never activate the layered
+// battery strip: activation lets Explorer reorder/recompose its transparent surface.
+unsafe fn create_menu_owner(instance: HINSTANCE) -> HWND {
+    let class = wide("CellTrayTrayMenuOwner");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(menu_procedure),
+        hInstance: instance,
+        lpszClassName: class.as_ptr(),
+        ..std::mem::zeroed()
+    };
+    if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+        return null_mut();
+    }
+    CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        class.as_ptr(),
+        wide("CellTray menu").as_ptr(),
+        WS_POPUP,
+        0,
+        0,
+        0,
+        0,
+        null_mut(),
+        null_mut(),
+        instance,
+        null(),
+    )
+}
+unsafe extern "system" fn menu_procedure(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    match msg {
+        WM_MEASUREITEM if tray_menu::measure(hwnd, l) => 1,
+        WM_DRAWITEM if tray_menu::draw(hwnd, l) => 1,
+        _ => DefWindowProcW(hwnd, msg, w, l),
+    }
+}
 unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     // No hardware or blocking work is performed in this window procedure.
     if msg != 0 && msg == TASKBAR_CREATED.load(Ordering::Relaxed) {
@@ -333,18 +378,39 @@ unsafe extern "system" fn taskbar_event(
     // Observe public shell events outside Explorer; never inject or intercept input.
     let taskbar = FindWindowW(wide("Shell_TrayWnd").as_ptr(), null());
     let strip = STRIP_HWND.load(Ordering::Relaxed) as HWND;
-    if !strip.is_null() && window == taskbar && IsWindowVisible(strip) != 0 {
-        SetWindowPos(
-            strip,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
+    if window == taskbar {
+        restore_taskbar_order(strip);
     }
 }
+// Explorer can raise the taskbar when a tray icon or a cell receives a click.
+// Repair only an actual occlusion; unchanged positions must not skip this check,
+// and ordinary timer ticks must not repeatedly reorder the transparent window.
+unsafe fn restore_taskbar_order(strip: HWND) {
+    if strip.is_null() || preview() || IsWindowVisible(strip) == 0 {
+        return;
+    }
+    let taskbar = FindWindowW(wide("Shell_TrayWnd").as_ptr(), null());
+    if taskbar.is_null() {
+        return;
+    }
+    let mut above = GetWindow(strip, GW_HWNDPREV);
+    while !above.is_null() {
+        if above == taskbar {
+            SetWindowPos(
+                strip,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+            break;
+        }
+        above = GetWindow(above, GW_HWNDPREV);
+    }
+}
+
 fn cell_width(dpi: u32) -> i32 {
     (110 * dpi.max(96) as i32 * CELL_SCALE_PERCENT / 9600).max(1)
 }
@@ -391,6 +457,7 @@ unsafe fn end_drag(hwnd: HWND) {
     if let Some(drag) = drag {
         if !drag.moved {
             details(hwnd);
+            restore_taskbar_order(hwnd);
             return;
         }
         let mut error = None;
@@ -427,6 +494,20 @@ fn display_order() -> [usize; 3] {
         return ui.preferences.cell_order;
     }
     [0, 1, 2]
+}
+fn shell_surface_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+    )
+}
+unsafe fn is_shell_surface(hwnd: HWND) -> bool {
+    if hwnd == GetShellWindow() || hwnd == GetDesktopWindow() {
+        return true;
+    }
+    let mut class = [0u16; 128];
+    let count = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+    shell_surface_class(&String::from_utf16_lossy(&class[..count]))
 }
 unsafe fn tick(controller: HWND) {
     if let Some(ui) = UI.get()
@@ -484,9 +565,10 @@ unsafe fn tick(controller: HWND) {
     let foreground = GetForegroundWindow();
     let mut front: RECT = std::mem::zeroed();
     GetWindowRect(foreground, &mut front);
-    let full = foreground != controller
-        && foreground != GetShellWindow()
-        && foreground != GetDesktopWindow()
+    let full = IsWindowVisible(foreground) != 0
+        && !is_shell_surface(foreground)
+        && foreground != controller
+        && foreground != MENU_HWND.load(Ordering::Relaxed) as HWND
         && front.left <= monitor.rcMonitor.left
         && front.top <= monitor.rcMonitor.top
         && front.right >= monitor.rcMonitor.right
@@ -541,6 +623,7 @@ unsafe fn tick(controller: HWND) {
         }
         ShowWindow(controller, SW_SHOWNOACTIVATE);
     }
+    restore_taskbar_order(controller);
     InvalidateRect(controller, null(), 0);
 }
 fn cells() -> [(String, String, bool); 3] {
@@ -711,16 +794,24 @@ unsafe fn menu(hwnd: HWND) {
     tray_menu::append(menu, 3);
     let mut p = std::mem::zeroed();
     GetCursorPos(&mut p);
-    SetForegroundWindow(hwnd);
+    let owner = MENU_HWND.load(Ordering::Relaxed) as HWND;
+    if owner.is_null() {
+        DestroyMenu(menu);
+        DeleteObject(brush);
+        return;
+    }
+    SetForegroundWindow(owner);
     let command = TrackPopupMenu(
         menu,
         TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
         p.x,
         p.y,
         0,
-        hwnd,
+        owner,
         null(),
     );
+    // Complete the standard notification-menu dismissal handshake on its owner.
+    PostMessageW(owner, WM_NULL, 0, 0);
     DestroyMenu(menu);
     DeleteObject(brush);
     match command {
@@ -746,6 +837,32 @@ unsafe fn menu(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_shell_surfaces_are_not_fullscreen_apps() {
+        for class in [
+            "WorkerW",
+            "Progman",
+            "Shell_TrayWnd",
+            "Shell_SecondaryTrayWnd",
+        ] {
+            assert!(shell_surface_class(class));
+        }
+        assert!(!shell_surface_class("Chrome_WidgetWin_1"));
+        assert!(!shell_surface_class("ApplicationFrameWindow"));
+    }
+    #[test]
+    fn tray_menu_owner_is_hidden_and_independent_of_the_layered_strip() {
+        unsafe {
+            let owner = create_menu_owner(GetModuleHandleW(null()));
+            assert!(!owner.is_null());
+            assert_eq!(IsWindowVisible(owner), 0);
+            assert_eq!(GetWindow(owner, GW_OWNER), null_mut());
+            let extended = GetWindowLongW(owner, GWL_EXSTYLE) as u32;
+            assert_ne!(extended & WS_EX_TOOLWINDOW, 0);
+            assert_eq!(extended & (WS_EX_LAYERED | WS_EX_NOACTIVATE), 0);
+            assert!(DestroyWindow(owner) != 0);
+        }
+    }
     #[test]
     fn battery_colors_follow_thresholds_and_charging_priority() {
         assert_eq!(battery_color("21%", false, 20, 10), 0x00f2f2f2);

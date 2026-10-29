@@ -6,7 +6,7 @@ now includes hardware diagnostics and an early standalone Windows battery-cell s
 
 ## Install on Windows
 
-Download **CellTray-v004-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
+Download **CellTray-v005-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
 and run it. Exit any older running CellTray copy before installing.
 
 Setup installs for your account in `%LOCALAPPDATA%/Programs/CellTray`, creates a
