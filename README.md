@@ -4,6 +4,32 @@ A small Rust peripheral battery utility targeting Windows 11, macOS, and Linux,
 with Bazzite KDE Plasma as the primary Linux target. The current implementation
 now includes hardware diagnostics and an early standalone Windows battery-cell strip.
 
+## Supported devices
+
+The following device/connection combinations have returned real battery readings
+on Windows and are the verified hardware targets for **v001**:
+
+| Device | Required connection | Battery percentage | Charging state |
+|---|---|---|---|
+| Logitech Alto Keys K98M keyboard | Logi Bolt USB receiver | Verified | Reported by the device |
+| Logitech MX Master 4 mouse | Logi Bolt USB receiver | Verified | Reported by the device |
+| Fractal Design Scape headset | Scape 2.4 GHz USB dongle | Verified | Not available |
+
+The verified Bolt receiver has USB ID **046d:c548**; the Scape dongle has USB ID
+**36bc:0001**. The current providers specifically discover those receiver IDs.
+The dongles can be connected through a USB switch, although switching between
+computers, sleep/resume, and reconnection still need broader testing.
+
+Other Logitech models using this Bolt receiver may expose compatible HID++ battery
+features, but they are **untested**, not advertised as supported. Other Bolt
+receiver IDs, Unifying and LIGHTSPEED receivers, Bluetooth connections, and direct
+USB-cable battery monitoring are **not currently implemented**.
+
+The downloadable widget app currently supports **Windows 11 x64**. macOS and Linux
+diagnostics build and pass CI, but hardware access on those platforms remains
+unverified and their widget interfaces are not implemented. Bazzite KDE Plasma is
+the planned primary Linux target.
+
 ## Battery cells on Windows
 
 Build with `cargo build --release`, then launch `target/release/celltray-widgets.exe`.
