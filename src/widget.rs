@@ -18,6 +18,7 @@ static RESTART: AtomicBool = AtomicBool::new(false);
 static SHOW_CELLS: AtomicBool = AtomicBool::new(true);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 const TRAY_MESSAGE: u32 = WM_APP + 1;
+const LAYOUT_MESSAGE: u32 = WM_APP + 2;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 use std::{
     ptr::{null, null_mut},
@@ -297,7 +298,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) 
             }
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
-        WM_TIMER => {
+        WM_TIMER | LAYOUT_MESSAGE => {
             tick(hwnd);
             0
         }
@@ -368,7 +369,7 @@ unsafe fn tray_icon(hwnd: HWND, operation: u32) {
 }
 unsafe extern "system" fn taskbar_event(
     _: HWINEVENTHOOK,
-    _: u32,
+    event: u32,
     window: HWND,
     _: i32,
     _: i32,
@@ -378,8 +379,10 @@ unsafe extern "system" fn taskbar_event(
     // Observe public shell events outside Explorer; never inject or intercept input.
     let taskbar = FindWindowW(wide("Shell_TrayWnd").as_ptr(), null());
     let strip = STRIP_HWND.load(Ordering::Relaxed) as HWND;
-    if window == taskbar {
-        restore_taskbar_order(strip);
+    if !strip.is_null() && (event == EVENT_SYSTEM_FOREGROUND || window == taskbar) {
+        // Re-evaluate visibility before raising the strip over Explorer. Foreground
+        // changes must not wait for the next one-second battery/layout timer.
+        PostMessageW(strip, LAYOUT_MESSAGE, 0, 0);
     }
 }
 // Explorer can raise the taskbar when a tray icon or a cell receives a click.
@@ -509,6 +512,24 @@ unsafe fn is_shell_surface(hwnd: HWND) -> bool {
     let count = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
     shell_surface_class(&String::from_utf16_lossy(&class[..count]))
 }
+fn fullscreen_bounds(
+    bounds: &RECT,
+    monitor: &MONITORINFO,
+    borderless: bool,
+    tolerance: i32,
+) -> bool {
+    let covers = |area: &RECT| {
+        bounds.right > bounds.left
+            && bounds.bottom > bounds.top
+            && bounds.left <= area.left + tolerance
+            && bounds.top <= area.top + tolerance
+            && bounds.right >= area.right - tolerance
+            && bounds.bottom >= area.bottom - tolerance
+    };
+    // Some borderless games size to the work area rather than the entire display.
+    // A normal maximized app keeps its caption and should retain taskbar cells.
+    covers(&monitor.rcMonitor) || (borderless && covers(&monitor.rcWork))
+}
 unsafe fn tick(controller: HWND) {
     if let Some(ui) = UI.get()
         && let Ok(mut ui) = ui.lock()
@@ -564,15 +585,21 @@ unsafe fn tick(controller: HWND) {
     );
     let foreground = GetForegroundWindow();
     let mut front: RECT = std::mem::zeroed();
-    GetWindowRect(foreground, &mut front);
+    let have_bounds = GetWindowRect(foreground, &mut front) != 0;
+    let mut frame: RECT = std::mem::zeroed();
+    let have_frame = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+        foreground,
+        windows_sys::Win32::Graphics::Dwm::DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+        (&mut frame as *mut RECT).cast(),
+        std::mem::size_of::<RECT>() as u32,
+    ) >= 0;
+    let borderless = GetWindowLongW(foreground, GWL_STYLE) as u32 & WS_CAPTION != WS_CAPTION;
     let full = IsWindowVisible(foreground) != 0
         && !is_shell_surface(foreground)
         && foreground != controller
         && foreground != MENU_HWND.load(Ordering::Relaxed) as HWND
-        && front.left <= monitor.rcMonitor.left
-        && front.top <= monitor.rcMonitor.top
-        && front.right >= monitor.rcMonitor.right
-        && front.bottom >= monitor.rcMonitor.bottom;
+        && ((have_bounds && fullscreen_bounds(&front, &monitor, borderless, scale(2)))
+            || (have_frame && fullscreen_bounds(&frame, &monitor, borderless, scale(2))));
     if std::env::var_os("CELLTRAY_LAYOUT_TRACE").is_some() {
         eprintln!(
             "taskbar=({}, {}, {}, {}), dpi={}, foreground=({}, {}, {}, {}), fullscreen={}",
@@ -843,6 +870,71 @@ unsafe fn menu(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fullscreen_detection_handles_borderless_work_area_and_frame_rounding() {
+        let monitor = MONITORINFO {
+            rcMonitor: RECT {
+                left: 0,
+                top: 0,
+                right: 3840,
+                bottom: 2160,
+            },
+            rcWork: RECT {
+                left: 0,
+                top: 0,
+                right: 3840,
+                bottom: 2100,
+            },
+            ..unsafe { std::mem::zeroed() }
+        };
+        assert!(fullscreen_bounds(&monitor.rcMonitor, &monitor, false, 2));
+        assert!(fullscreen_bounds(&monitor.rcWork, &monitor, true, 2));
+        assert!(!fullscreen_bounds(&monitor.rcWork, &monitor, false, 2));
+        assert!(fullscreen_bounds(
+            &RECT {
+                left: 1,
+                top: 1,
+                right: 3839,
+                bottom: 2159
+            },
+            &monitor,
+            true,
+            2
+        ));
+        assert!(!fullscreen_bounds(
+            &RECT {
+                left: 3840,
+                top: 0,
+                right: 7680,
+                bottom: 2160
+            },
+            &monitor,
+            true,
+            2
+        ));
+        assert!(!fullscreen_bounds(
+            &RECT {
+                left: 100,
+                top: 100,
+                right: 2000,
+                bottom: 1600
+            },
+            &monitor,
+            true,
+            2
+        ));
+        assert!(!fullscreen_bounds(
+            &RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0
+            },
+            &monitor,
+            true,
+            2
+        ));
+    }
     #[test]
     fn desktop_shell_surfaces_are_not_fullscreen_apps() {
         for class in [
