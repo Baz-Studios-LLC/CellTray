@@ -530,6 +530,81 @@ fn fullscreen_bounds(
     // A normal maximized app keeps its caption and should retain taskbar cells.
     covers(&monitor.rcMonitor) || (borderless && covers(&monitor.rcWork))
 }
+struct FullscreenWindow {
+    bounds: Option<RECT>,
+    frame: Option<RECT>,
+    borderless: bool,
+}
+fn fullscreen_in_windows(
+    windows: &[FullscreenWindow],
+    monitor: &MONITORINFO,
+    tolerance: i32,
+) -> bool {
+    windows.iter().any(|window| {
+        window
+            .bounds
+            .iter()
+            .chain(window.frame.iter())
+            .any(|bounds| fullscreen_bounds(bounds, monitor, window.borderless, tolerance))
+    })
+}
+unsafe fn has_fullscreen_window(controller: HWND, monitor: &MONITORINFO, tolerance: i32) -> bool {
+    struct Scan {
+        controller: HWND,
+        windows: Vec<FullscreenWindow>,
+    }
+    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> i32 {
+        let scan = &mut *(data as *mut Scan);
+        if hwnd == scan.controller
+            || hwnd == MENU_HWND.load(Ordering::Relaxed) as HWND
+            || hwnd == options_window::window()
+            || IsWindowVisible(hwnd) == 0
+            || IsIconic(hwnd) != 0
+            || is_shell_surface(hwnd)
+        {
+            return 1;
+        }
+        use windows_sys::Win32::Graphics::Dwm::*;
+        let mut cloaked = 0u32;
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        if cloaked != 0 {
+            return 1;
+        }
+        // Ignore click-through visual overlays, which can span an entire display.
+        let extended = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if extended & (WS_EX_LAYERED | WS_EX_TRANSPARENT) == (WS_EX_LAYERED | WS_EX_TRANSPARENT) {
+            return 1;
+        }
+        let mut bounds: RECT = std::mem::zeroed();
+        let have_bounds = GetWindowRect(hwnd, &mut bounds) != 0;
+        let mut frame: RECT = std::mem::zeroed();
+        let have_frame = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            (&mut frame as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        ) >= 0;
+        scan.windows.push(FullscreenWindow {
+            bounds: have_bounds.then_some(bounds),
+            frame: have_frame.then_some(frame),
+            borderless: GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION != WS_CAPTION,
+        });
+        1
+    }
+    let mut scan = Scan {
+        controller,
+        windows: Vec::new(),
+    };
+    // A smaller foreground app does not reveal the taskbar if a fullscreen game
+    // remains underneath it. Inspect all visible windows on the current desktop.
+    EnumWindows(Some(collect), (&mut scan as *mut Scan) as LPARAM);
+    fullscreen_in_windows(&scan.windows, monitor, tolerance)
+}
 unsafe fn tick(controller: HWND) {
     if let Some(ui) = UI.get()
         && let Ok(mut ui) = ui.lock()
@@ -583,36 +658,11 @@ unsafe fn tick(controller: HWND) {
         MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST),
         &mut monitor,
     );
-    let foreground = GetForegroundWindow();
-    let mut front: RECT = std::mem::zeroed();
-    let have_bounds = GetWindowRect(foreground, &mut front) != 0;
-    let mut frame: RECT = std::mem::zeroed();
-    let have_frame = windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute(
-        foreground,
-        windows_sys::Win32::Graphics::Dwm::DWMWA_EXTENDED_FRAME_BOUNDS as u32,
-        (&mut frame as *mut RECT).cast(),
-        std::mem::size_of::<RECT>() as u32,
-    ) >= 0;
-    let borderless = GetWindowLongW(foreground, GWL_STYLE) as u32 & WS_CAPTION != WS_CAPTION;
-    let full = IsWindowVisible(foreground) != 0
-        && !is_shell_surface(foreground)
-        && foreground != controller
-        && foreground != MENU_HWND.load(Ordering::Relaxed) as HWND
-        && ((have_bounds && fullscreen_bounds(&front, &monitor, borderless, scale(2)))
-            || (have_frame && fullscreen_bounds(&frame, &monitor, borderless, scale(2))));
+    let full = has_fullscreen_window(controller, &monitor, scale(2));
     if std::env::var_os("CELLTRAY_LAYOUT_TRACE").is_some() {
         eprintln!(
-            "taskbar=({}, {}, {}, {}), dpi={}, foreground=({}, {}, {}, {}), fullscreen={}",
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            dpi,
-            front.left,
-            front.top,
-            front.right,
-            front.bottom,
-            full
+            "taskbar=({}, {}, {}, {}), dpi={}, fullscreen={}",
+            rect.left, rect.top, rect.right, rect.bottom, dpi, full
         );
     }
     // Fail closed for narrow/vertical/hidden taskbars and fullscreen applications.
@@ -934,6 +984,47 @@ mod tests {
             true,
             2
         ));
+    }
+    #[test]
+    fn fullscreen_under_a_smaller_foreground_window_still_hides_cells() {
+        let monitor = MONITORINFO {
+            rcMonitor: RECT {
+                left: 0,
+                top: 0,
+                right: 3840,
+                bottom: 2160,
+            },
+            rcWork: RECT {
+                left: 0,
+                top: 0,
+                right: 3840,
+                bottom: 2100,
+            },
+            ..unsafe { std::mem::zeroed() }
+        };
+        let small = FullscreenWindow {
+            bounds: Some(RECT {
+                left: 300,
+                top: 100,
+                right: 3000,
+                bottom: 1900,
+            }),
+            frame: None,
+            borderless: false,
+        };
+        let game = FullscreenWindow {
+            bounds: Some(monitor.rcMonitor),
+            frame: None,
+            borderless: true,
+        };
+        assert!(fullscreen_in_windows(&[small, game], &monitor, 2));
+        let maximized = FullscreenWindow {
+            bounds: Some(monitor.rcWork),
+            frame: None,
+            borderless: false,
+        };
+        assert!(!fullscreen_in_windows(&[maximized], &monitor, 2));
+        assert!(!fullscreen_in_windows(&[], &monitor, 2));
     }
     #[test]
     fn desktop_shell_surfaces_are_not_fullscreen_apps() {

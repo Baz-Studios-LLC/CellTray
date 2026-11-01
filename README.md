@@ -6,7 +6,7 @@ now includes hardware diagnostics and an early standalone Windows battery-cell s
 
 ## Install on Windows
 
-Download **CellTray-v008-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
+Download **CellTray-v009-Setup-x64.exe** from the [latest release](https://github.com/Baz-Studios-LLC/CellTray/releases/latest)
 and run it. Exit any older running CellTray copy before installing.
 
 Setup installs for your account in `%LOCALAPPDATA%/Programs/CellTray`, creates a
@@ -109,7 +109,7 @@ This is our own Rust/Win32 implementation. It is currently an **overlay**, not a
 Explorer/XAML extension. An experimental taskbar child window failed to appear on
 the development machine, so the current strip runs in its own process/window.
 It tracks taskbar position/DPI, hides for fullscreen and borderless work-area apps
-on the taskbar display, and hides when
+on the taskbar display even beneath a smaller foreground window, and hides when
 the taskbar is absent. Taskbar autohide animations and Explorer recovery need more
 physical testing. Windows light themes, collision detection, whole-strip positioning, multiple
 monitors, tooltips, full accessibility, in-app startup settings and notifications are not implemented.
